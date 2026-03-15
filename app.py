@@ -3,7 +3,13 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("OPENAI_API_KEY is missing.")
+    st.stop()
+
+client = OpenAI(api_key=api_key)
 
 st.set_page_config(page_title="TurboPitch AI", layout="wide")
 
