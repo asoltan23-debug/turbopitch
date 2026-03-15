@@ -9,7 +9,6 @@ if not api_key:
     st.error("OPENAI_API_KEY is missing in this environment.")
     st.stop()
 
-st.info(f"Key loaded. Starts with: {api_key[:12]}")
 
 client = OpenAI(api_key=api_key)
 
