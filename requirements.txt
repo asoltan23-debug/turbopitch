@@ -6,3 +6,4 @@ matplotlib
 openpyxl
 xlsxwriter
 python-docx
+python-pptx
