@@ -30,6 +30,40 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ==================================================
 st.set_page_config(page_title="TurboPitch", layout="wide")
 
+with st.expander("🚀 How to Use TurboPitch (Click to Expand)", expanded=False):
+    st.markdown("""
+### Step 1: Enter Your Idea
+Describe your business in plain English.
+Example: “AI resume builder for job seekers”
+
+### Step 2: Select Your Industry
+This helps TurboPitch apply relevant benchmarks and assumptions.
+
+### Step 3: Choose Assumption Mode
+- **AI Mode** → TurboPitch generates realistic assumptions
+- **Manual Mode** → You input your own numbers
+
+### Step 4: Generate Financials
+TurboPitch builds:
+- Revenue projections
+- Cost structure
+- Profitability timeline
+
+### Step 5: Review AI Feedback
+The system will:
+- Flag unrealistic assumptions
+- Challenge pricing or growth
+- Suggest improvements
+
+### Step 6: Investor Readiness Score
+You’ll get a score based on:
+- Realism
+- Market logic
+- Financial viability
+
+### Step 7: Iterate
+Adjust inputs → regenerate → improve your model
+""")
 
 # ==================================================
 # CUSTOM CSS
@@ -2110,6 +2144,297 @@ with col_top4:
             st.session_state.answer_builder_output = answer_text
         st.success("Founder answer prep generated.")
 
+import math
+
+def safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except:
+        return default
+
+
+def get_industry_benchmarks(industry: str):
+    """
+    Simple benchmark ranges by industry.
+    You can expand this over time.
+    """
+    industry = (industry or "").strip().lower()
+
+    benchmark_map = {
+        "saas": {
+            "price_low": 15,
+            "price_high": 99,
+            "growth_low": 0.10,
+            "growth_high": 0.30,
+            "margin_low": 0.70,
+            "margin_high": 0.90,
+            "cogs_low": 0.10,
+            "cogs_high": 0.30,
+            "churn_low": 0.02,
+            "churn_high": 0.08,
+        },
+        "e-commerce": {
+            "price_low": 20,
+            "price_high": 120,
+            "growth_low": 0.05,
+            "growth_high": 0.20,
+            "margin_low": 0.30,
+            "margin_high": 0.60,
+            "cogs_low": 0.40,
+            "cogs_high": 0.70,
+            "churn_low": 0.05,
+            "churn_high": 0.15,
+        },
+        "service": {
+            "price_low": 100,
+            "price_high": 5000,
+            "growth_low": 0.05,
+            "growth_high": 0.25,
+            "margin_low": 0.40,
+            "margin_high": 0.80,
+            "cogs_low": 0.20,
+            "cogs_high": 0.60,
+            "churn_low": 0.01,
+            "churn_high": 0.10,
+        },
+        "consulting": {
+            "price_low": 500,
+            "price_high": 10000,
+            "growth_low": 0.05,
+            "growth_high": 0.25,
+            "margin_low": 0.50,
+            "margin_high": 0.85,
+            "cogs_low": 0.15,
+            "cogs_high": 0.50,
+            "churn_low": 0.01,
+            "churn_high": 0.08,
+        },
+        "marketplace": {
+            "price_low": 10,
+            "price_high": 100,
+            "growth_low": 0.08,
+            "growth_high": 0.25,
+            "margin_low": 0.50,
+            "margin_high": 0.85,
+            "cogs_low": 0.15,
+            "cogs_high": 0.50,
+            "churn_low": 0.03,
+            "churn_high": 0.10,
+        },
+    }
+
+    return benchmark_map.get(industry, {
+        "price_low": 20,
+        "price_high": 100,
+        "growth_low": 0.05,
+        "growth_high": 0.20,
+        "margin_low": 0.40,
+        "margin_high": 0.80,
+        "cogs_low": 0.20,
+        "cogs_high": 0.60,
+        "churn_low": 0.02,
+        "churn_high": 0.10,
+    })
+
+
+def clamp(value, low, high):
+    return max(low, min(value, high))
+
+
+def generate_ai_explanations(
+    industry,
+    business_model,
+    startup_price,
+    monthly_growth_rate,
+    cogs_percent,
+    churn_rate=None
+):
+    """
+    Creates dynamic explanation cards and suggested fixes.
+    Returns:
+      explanations: list of dicts
+      suggested_fixes: dict
+      severity_score: int
+    """
+
+    benchmarks = get_industry_benchmarks(industry)
+
+    price = safe_float(startup_price)
+    growth = safe_float(monthly_growth_rate)
+    cogs = safe_float(cogs_percent)
+    churn = safe_float(churn_rate, 0.05)
+
+    explanations = []
+    suggested_fixes = {}
+    severity_score = 0
+
+    # ----- Pricing check -----
+    if price > benchmarks["price_high"]:
+        severity_score += 25
+        suggested_price = round((benchmarks["price_low"] + benchmarks["price_high"]) / 2, 2)
+        suggested_fixes["startup_price"] = suggested_price
+
+        explanations.append({
+            "title": "Pricing looks too high for this market",
+            "severity": "High",
+            "reason": (
+                f"Your entered price is ${price:,.2f}, which is above the typical range "
+                f"for {industry} businesses (${benchmarks['price_low']}–${benchmarks['price_high']})."
+            ),
+            "why_it_matters": (
+                "If pricing is too high, early customers may hesitate to buy, which lowers conversion "
+                "and makes revenue assumptions less believable."
+            ),
+            "suggestion": (
+                f"A more realistic starting range may be ${benchmarks['price_low']}–${benchmarks['price_high']}, "
+                f"with a suggested test price of about ${suggested_price:,.2f}."
+            )
+        })
+
+    elif price < benchmarks["price_low"]:
+        severity_score += 10
+        suggested_price = round((benchmarks["price_low"] + price) / 2, 2)
+        suggested_fixes["startup_price"] = suggested_price
+
+        explanations.append({
+            "title": "Pricing may be too low",
+            "severity": "Medium",
+            "reason": (
+                f"Your price of ${price:,.2f} is below the usual range for {industry} "
+                f"(${benchmarks['price_low']}–${benchmarks['price_high']})."
+            ),
+            "why_it_matters": (
+                "Underpricing can make growth look easier on paper, but it may hurt margins and make it harder "
+                "to cover operating costs."
+            ),
+            "suggestion": (
+                f"Consider testing a higher entry point. A more balanced starting point could be around ${suggested_price:,.2f}."
+            )
+        })
+
+    # ----- Growth check -----
+    if growth > benchmarks["growth_high"]:
+        severity_score += 25
+        suggested_growth = round((benchmarks["growth_low"] + benchmarks["growth_high"]) / 2, 4)
+        suggested_fixes["monthly_growth_rate"] = suggested_growth
+
+        explanations.append({
+            "title": "Growth assumption looks aggressive",
+            "severity": "High",
+            "reason": (
+                f"You entered a monthly growth rate of {growth*100:.1f}%, which is above a more typical range "
+                f"for {industry} ({benchmarks['growth_low']*100:.0f}%–{benchmarks['growth_high']*100:.0f}% per month)."
+            ),
+            "why_it_matters": (
+                "Aggressive growth assumptions can quickly inflate revenue projections and make the business "
+                "look stronger than it may be in reality."
+            ),
+            "suggestion": (
+                f"A more realistic planning assumption may be around {suggested_growth*100:.1f}% monthly growth."
+            )
+        })
+
+    elif growth < 0:
+        severity_score += 20
+        suggested_fixes["monthly_growth_rate"] = 0.03
+
+        explanations.append({
+            "title": "Growth rate is invalid",
+            "severity": "High",
+            "reason": "Your growth rate is negative.",
+            "why_it_matters": (
+                "A negative growth assumption can distort the model unless you are intentionally modeling decline."
+            ),
+            "suggestion": "Reset growth to a modest positive assumption like 3% and test from there."
+        })
+
+    # ----- COGS check -----
+    if cogs > benchmarks["cogs_high"]:
+        severity_score += 20
+        suggested_cogs = round((benchmarks["cogs_low"] + benchmarks["cogs_high"]) / 2, 4)
+        suggested_fixes["cogs_percent"] = suggested_cogs
+
+        explanations.append({
+            "title": "Cost of goods looks high",
+            "severity": "High",
+            "reason": (
+                f"Your cost of goods is {cogs*100:.1f}% of revenue, which is above the typical range "
+                f"for {industry} ({benchmarks['cogs_low']*100:.0f}%–{benchmarks['cogs_high']*100:.0f}%)."
+            ),
+            "why_it_matters": (
+                "High delivery costs reduce gross margin, which makes profitability harder even if revenue grows."
+            ),
+            "suggestion": (
+                f"Try stress-testing the business with COGS closer to {suggested_cogs*100:.1f}%."
+            )
+        })
+
+    # ----- Margin inference check -----
+    gross_margin = 1 - cogs
+    if gross_margin < benchmarks["margin_low"]:
+        severity_score += 15
+
+        explanations.append({
+            "title": "Gross margin may be too weak",
+            "severity": "Medium",
+            "reason": (
+                f"Your estimated gross margin is {gross_margin*100:.1f}%, below the lower end of the typical "
+                f"{industry} benchmark ({benchmarks['margin_low']*100:.0f}%–{benchmarks['margin_high']*100:.0f}%)."
+            ),
+            "why_it_matters": (
+                "A weak margin means a lot of revenue gets consumed before covering payroll, marketing, and overhead."
+            ),
+            "suggestion": (
+                "Look at pricing, supplier costs, packaging, delivery, or service efficiency to improve margin."
+            )
+        })
+
+    # ----- Churn check -----
+    if churn > benchmarks["churn_high"]:
+        severity_score += 15
+        suggested_churn = round((benchmarks["churn_low"] + benchmarks["churn_high"]) / 2, 4)
+        suggested_fixes["churn_rate"] = suggested_churn
+
+        explanations.append({
+            "title": "Churn assumption looks too high",
+            "severity": "Medium",
+            "reason": (
+                f"Your churn rate is {churn*100:.1f}%, above the normal range for {industry} "
+                f"({benchmarks['churn_low']*100:.0f}%–{benchmarks['churn_high']*100:.0f}%)."
+            ),
+            "why_it_matters": (
+                "High churn means you lose customers faster, so growth becomes much harder to sustain."
+            ),
+            "suggestion": (
+                f"Try modeling churn closer to {suggested_churn*100:.1f}% unless you have strong evidence otherwise."
+            )
+        })
+
+    if not explanations:
+        explanations.append({
+            "title": "Your assumptions look reasonably aligned",
+            "severity": "Low",
+            "reason": "Your main inputs are generally within a realistic planning range.",
+            "why_it_matters": (
+                "That does not guarantee success, but it does mean your model starts from assumptions "
+                "that are easier to defend."
+            ),
+            "suggestion": "You can still test conservative and aggressive scenarios to compare outcomes."
+        })
+
+    severity_score = min(severity_score, 100)
+    return explanations, suggested_fixes, severity_score
+
+
+def apply_suggested_fixes_to_session(suggested_fixes):
+    """
+    Applies suggested values back into Streamlit session state.
+    Only updates keys that already exist or are used in your app.
+    """
+    for key, value in suggested_fixes.items():
+        st.session_state[key] = value
 
 # ==================================================
 # DASHBOARD
@@ -2123,6 +2448,83 @@ year3_cash = projection_df.loc[2, "Ending Cash"]
 
 net_income_class = "kpi-green" if year3_net_income >= 0 else "kpi-red"
 cash_class = "kpi-green" if year3_cash >= 0 else "kpi-red"
+
+st.subheader("AI Explanation Engine")
+
+industry_value = st.session_state.get("industry", "saas")
+
+# ✅ Use YOUR actual variables
+startup_price_value = st.session_state.get("price_per_unit", 29.0)
+
+price = safe_float(startup_price_value, 1)
+cost = safe_float(st.session_state.get("cost_per_unit", 0.2))
+
+# Convert to %
+cogs_percent_value = cost / price if price > 0 else 0.2
+
+monthly_growth_rate_value = safe_float(st.session_state.get("growth_y2", 0.10))
+
+churn_rate_value = 0.05  # keep simple for now
+
+explanations, suggested_fixes, severity_score = generate_ai_explanations(
+    industry=industry_value,
+    business_model="general",
+    startup_price=startup_price_value,
+    monthly_growth_rate=monthly_growth_rate_value,
+    cogs_percent=cogs_percent_value,
+    churn_rate=churn_rate_value
+)
+
+# Save for export/reporting if needed
+st.session_state["ai_explanations"] = explanations
+st.session_state["suggested_fixes"] = suggested_fixes
+st.session_state["assumption_severity_score"] = severity_score
+
+if severity_score >= 50:
+    st.warning(f"Your model has several assumptions that may be hard to defend. Risk level: {severity_score}/100")
+elif severity_score >= 20:
+    st.info(f"Your model has a few assumptions worth reviewing. Risk level: {severity_score}/100")
+else:
+    st.success(f"Your core assumptions look reasonably grounded. Risk level: {severity_score}/100")
+
+for i, item in enumerate(explanations, 1):
+    with st.expander(f"{i}. {item['title']} ({item['severity']})", expanded=(i == 1)):
+        st.write(f"What we saw: {item['reason']}")
+        st.write(f"Why it matters: {item['why_it_matters']}")
+        st.write(f"Suggested adjustment: {item['suggestion']}")
+
+st.subheader("Optimize My Model")
+
+if suggested_fixes and len(suggested_fixes) > 0:
+    preview_rows = []
+
+    for key, value in suggested_fixes.items():
+        preview_rows.append({
+            "Field": key,
+            "Current Value": st.session_state.get(key, "N/A"),
+            "Suggested Value": value
+        })
+
+    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+
+    if st.button("Apply Suggested Fixes"):
+        if "startup_price" in suggested_fixes:
+            st.session_state.price_per_unit = suggested_fixes["startup_price"]
+
+        if "monthly_growth_rate" in suggested_fixes:
+            st.session_state.growth_y2 = suggested_fixes["monthly_growth_rate"]
+
+        if "cogs_percent" in suggested_fixes:
+            new_price = safe_float(st.session_state.get("price_per_unit", 1), 1)
+            st.session_state.cost_per_unit = round(new_price * suggested_fixes["cogs_percent"], 2)
+
+        if "churn_rate" in suggested_fixes:
+            st.session_state.churn_rate = suggested_fixes["churn_rate"]
+
+        st.success("Suggested fixes applied.")
+        st.rerun()
+else:
+    st.info("No major fixes needed based on the current assumptions.")
 
 st.markdown("---")
 st.subheader("Financial Dashboard")
