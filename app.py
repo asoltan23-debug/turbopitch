@@ -254,6 +254,10 @@ def clean_ai_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+def escape_dollar_signs(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("$", r"\$")
 
 def currency_tick_formatter(x, pos):
     if abs(x) >= 1_000_000:
@@ -2489,19 +2493,36 @@ else:
 
 for i, item in enumerate(explanations, 1):
     with st.expander(f"{i}. {item['title']} ({item['severity']})", expanded=(i == 1)):
-        st.write(f"What we saw: {item['reason']}")
-        st.write(f"Why it matters: {item['why_it_matters']}")
-        st.write(f"Suggested adjustment: {item['suggestion']}")
+        st.markdown(f"**What we saw:** {escape_dollar_signs(item['reason'])}")
+        st.markdown(f"**Why it matters:** {escape_dollar_signs(item['why_it_matters'])}")
+        st.markdown(f"**Suggested adjustment:** {escape_dollar_signs(item['suggestion'])}")
 
 st.subheader("Optimize My Model")
 
 if suggested_fixes and len(suggested_fixes) > 0:
+    
+    label_map = {
+        "startup_price": "Price per Unit",
+        "monthly_growth_rate": "Year 2 Growth Rate",
+        "cogs_percent": "Cost per Unit",
+        "churn_rate": "Churn Rate"
+    }
+
     preview_rows = []
 
     for key, value in suggested_fixes.items():
+        if key == "startup_price":
+            current_val = st.session_state.get("price_per_unit", "—")
+        elif key == "monthly_growth_rate":
+            current_val = st.session_state.get("growth_y2", "—")
+        elif key == "cogs_percent":
+            current_val = st.session_state.get("cost_per_unit", "—")
+        else:
+            current_val = st.session_state.get(key, "—")
+
         preview_rows.append({
-            "Field": key,
-            "Current Value": st.session_state.get(key, "N/A"),
+            "Field": label_map.get(key, key),
+            "Current Value": current_val,
             "Suggested Value": value
         })
 
