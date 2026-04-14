@@ -30,8 +30,64 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ==================================================
 st.set_page_config(page_title="TurboPitch", layout="wide")
 
-with st.expander("🚀 How to Use TurboPitch (Click to Expand)", expanded=False):
-    st.markdown("""
+# =========================================================
+# TURBOPITCH UI FLOW SETUP
+# =========================================================
+
+if "tp_step" not in st.session_state:
+    st.session_state.tp_step = 1
+
+if "ai_review_done" not in st.session_state:
+    st.session_state.ai_review_done = False
+
+step_labels = {
+    1: "Startup Info",
+    2: "Financial Assumptions",
+    3: "AI Review",
+    4: "Generate Materials",
+    5: "Downloads"
+}
+
+def next_step():
+    if st.session_state.tp_step < 5:
+        st.session_state.tp_step += 1
+
+def prev_step():
+    if st.session_state.tp_step > 1:
+        st.session_state.tp_step -= 1
+
+def render_nav(position="top"):
+    nav_left, nav_right = st.columns(2)
+
+    with nav_left:
+        if st.session_state.tp_step > 1:
+            st.button(
+                "⬅ Back",
+                on_click=prev_step,
+                use_container_width=True,
+                key=f"back_{position}"
+            )
+
+    with nav_right:
+        if st.session_state.tp_step < 5:
+            st.button(
+                "Next ➜",
+                on_click=next_step,
+                use_container_width=True,
+                key=f"next_{position}"
+            )
+
+st.progress(st.session_state.tp_step / 5)
+st.markdown(f"## Step {st.session_state.tp_step}: {step_labels[st.session_state.tp_step]}")
+st.caption("Follow the guided flow to build and validate your startup.")
+
+render_nav("top")
+
+st.divider()
+
+if st.session_state.tp_step == 1:
+    with st.expander("🚀 How to Use TurboPitch (Click to Expand)", expanded=False):
+        st.markdown("""
 ### Step 1: Enter Your Idea
 Describe your business in plain English.
 Example: “AI resume builder for job seekers”
@@ -39,7 +95,7 @@ Example: “AI resume builder for job seekers”
 ### Step 2: Select Your Industry
 This helps TurboPitch apply relevant benchmarks and assumptions.
 
-### Step 3: Choose Assumption Mode
+### Step 3: Choose Assumption Mode 
 - **AI Mode** → TurboPitch generates realistic assumptions
 - **Manual Mode** → You input your own numbers
 
@@ -63,7 +119,16 @@ You’ll get a score based on:
 
 ### Step 7: Iterate
 Adjust inputs → regenerate → improve your model
-""")
+        """)
+
+elif st.session_state.tp_step == 2:
+    st.subheader("Review Your Financial Assumptions")
+    st.write("Use the sidebar to set your pricing, volume, growth, and investor pushback assumptions.")
+
+    if st.session_state.get("idea"):
+        st.success(f"**Your startup idea:** {st.session_state.idea}")
+    else:
+        st.warning("⚠️ No startup idea detected. Go back to Step 1 and enter your idea before generating assumptions.")
 
 # ==================================================
 # CUSTOM CSS
@@ -109,13 +174,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("TurboPitch")
-st.subheader("Turn startup ideas into investor-ready materials — then pressure-test them through a VC lens.")
-st.caption(
-    "TurboPitch combines founder inputs, structured financial modeling, benchmark logic, market reality logic, "
-    "and AI reasoning to evaluate startup assumptions through an investor-readiness lens."
-)
-
+if st.session_state.tp_step == 1:
+    st.title("TurboPitch")
+    st.subheader("Turn startup ideas into investor-ready materials — then pressure-test them through a VC lens.")
+    st.caption(
+        "TurboPitch combines founder inputs, structured financial modeling, benchmark logic, market reality logic, "
+        "and AI reasoning to evaluate startup assumptions through an investor-readiness lens."
+    )
 
 # ==================================================
 # SESSION STATE DEFAULTS
@@ -1865,143 +1930,145 @@ def extract_pitch_deck_section(text: str):
 # ==================================================
 # MAIN IDEA INPUT
 # ==================================================
-st.session_state.idea = st.text_area(
-    "Describe Your Startup",
-    value=st.session_state.idea,
-    height=140,
-    placeholder="Explain what the business does, who it serves, and why it matters..."
-)
+if st.session_state.tp_step == 1:
+    st.subheader("Describe Your Startup")
 
-
+    idea_input = st.text_area(
+        "Describe Your Startup",
+        value=st.session_state.get("idea", ""),
+        height=140,
+        placeholder="Explain what the business does, who it serves, and why it matters..."
+    )
+    st.session_state.idea = idea_input
 # ==================================================
 # SIDEBAR INPUTS
 # ==================================================
-with st.sidebar:
-    st.header("Financial Assumptions")
+if st.session_state.tp_step == 2:
+    with st.sidebar:
+        st.header("Financial Assumptions")
 
-    st.session_state.industry = st.selectbox(
-        "Startup industry",
-        options=list(INDUSTRY_BENCHMARKS.keys()),
-        index=list(INDUSTRY_BENCHMARKS.keys()).index(st.session_state.industry),
-    )
+        st.session_state.industry = st.selectbox(
+            "Startup industry",
+            options=list(INDUSTRY_BENCHMARKS.keys()),
+            index=list(INDUSTRY_BENCHMARKS.keys()).index(st.session_state.industry),
+        )
 
-    st.markdown("### Assumption Setup")
+        st.markdown("### Assumption Setup")
 
-    st.session_state.assumption_mode = st.radio(
-        "Choose assumption mode",
-        ["Manual", "Help Me Generate Them"],
-        index=0 if st.session_state.assumption_mode == "Manual" else 1
-    )
+        st.session_state.assumption_mode = st.radio(
+            "Choose assumption mode",
+            ["Manual", "Help Me Generate Them"],
+            index=0 if st.session_state.assumption_mode == "Manual" else 1
+        )
 
-    if st.session_state.assumption_mode == "Help Me Generate Them":
-        st.caption("Not sure what numbers to use? TurboPitch can generate a starting model based on your industry, idea, and reality-engine heuristics.")
+        if st.session_state.assumption_mode == "Help Me Generate Them":
+            st.caption("Not sure what numbers to use? TurboPitch can generate a starting model based on your industry, idea, and reality-engine heuristics.")
 
-        if st.button("Generate Suggested Assumptions"):
-            suggested = generate_rule_based_assumptions(
-                st.session_state.industry,
-                st.session_state.idea
-            )
-
-            st.session_state.price_per_unit = suggested["price_per_unit"]
-            st.session_state.year1_units = suggested["year1_units"]
-            st.session_state.growth_y2 = suggested["growth_y2"]
-            st.session_state.growth_y3 = suggested["growth_y3"]
-            st.session_state.cost_per_unit = suggested["cost_per_unit"]
-            st.session_state.opex_pct = suggested["opex_pct"]
-            st.session_state.fixed_overhead = suggested["fixed_overhead"]
-            st.session_state.starting_cash = suggested["starting_cash"]
-
-            with st.spinner("Explaining suggested assumptions..."):
-                helper_text = run_ai_assumption_helper(
-                    st.session_state.idea,
+            if st.button("Generate Suggested Assumptions"):
+                suggested = generate_rule_based_assumptions(
                     st.session_state.industry,
-                    suggested
+                    st.session_state.idea
                 )
 
-            st.session_state.assumption_helper_output = helper_text
-            st.success("Suggested starter assumptions generated with explanation.")
+                st.session_state.price_per_unit = suggested["price_per_unit"]
+                st.session_state.year1_units = suggested["year1_units"]
+                st.session_state.growth_y2 = suggested["growth_y2"]
+                st.session_state.growth_y3 = suggested["growth_y3"]
+                st.session_state.cost_per_unit = suggested["cost_per_unit"]
+                st.session_state.opex_pct = suggested["opex_pct"]
+                st.session_state.fixed_overhead = suggested["fixed_overhead"]
+                st.session_state.starting_cash = suggested["starting_cash"]
 
-    st.session_state.price_per_unit = st.number_input(
-        "Price per unit ($)",
-        min_value=0.0,
-        value=float(st.session_state.price_per_unit),
-        step=0.25,
-    )
+                with st.spinner("Explaining suggested assumptions..."):
+                    helper_text = run_ai_assumption_helper(
+                        st.session_state.idea,
+                        st.session_state.industry,
+                        suggested
+                    )
 
-    st.session_state.year1_units = st.number_input(
-        "Year 1 units sold",
-        min_value=0,
-        value=int(st.session_state.year1_units),
-        step=1000,
-    )
+                st.session_state.assumption_helper_output = helper_text
+                st.success("Suggested starter assumptions generated with explanation.")
 
-    st.session_state.growth_y2 = st.slider(
-        "Year 2 growth rate",
-        min_value=0.0,
-        max_value=2.0,
-        value=float(st.session_state.growth_y2),
-        step=0.01,
-    )
+        st.session_state.price_per_unit = st.number_input(
+            "Price per unit ($)",
+            min_value=0.0,
+            value=float(st.session_state.price_per_unit),
+            step=0.25,
+        )
 
-    st.session_state.growth_y3 = st.slider(
-        "Year 3 growth rate",
-        min_value=0.0,
-        max_value=2.0,
-        value=float(st.session_state.growth_y3),
-        step=0.01,
-    )
+        st.session_state.year1_units = st.number_input(
+            "Year 1 units sold",
+            min_value=0,
+            value=int(st.session_state.year1_units),
+            step=1000,
+        )
 
-    st.session_state.cost_per_unit = st.number_input(
-        "Cost per unit ($)",
-        min_value=0.0,
-        value=float(st.session_state.cost_per_unit),
-        step=0.25,
-    )
+        st.session_state.growth_y2 = st.slider(
+            "Year 2 growth rate",
+            min_value=0.0,
+            max_value=2.0,
+            value=float(st.session_state.growth_y2),
+            step=0.01,
+        )
 
-    st.session_state.opex_pct = st.slider(
-        "Operating expense % of revenue",
-        min_value=0.0,
-        max_value=1.0,
-        value=float(st.session_state.opex_pct),
-        step=0.01,
-    )
+        st.session_state.growth_y3 = st.slider(
+            "Year 3 growth rate",
+            min_value=0.0,
+            max_value=2.0,
+            value=float(st.session_state.growth_y3),
+            step=0.01,
+        )
 
-    st.session_state.fixed_overhead = st.number_input(
-        "Fixed annual overhead ($)",
-        min_value=0.0,
-        value=float(st.session_state.fixed_overhead),
-        step=10000.0,
-    )
+        st.session_state.cost_per_unit = st.number_input(
+            "Cost per unit ($)",
+            min_value=0.0,
+            value=float(st.session_state.cost_per_unit),
+            step=0.25,
+        )
 
-    st.session_state.starting_cash = st.number_input(
-        "Starting cash ($)",
-        min_value=0.0,
-        value=float(st.session_state.starting_cash),
-        step=10000.0,
-    )
+        st.session_state.opex_pct = st.slider(
+            "Operating expense % of revenue",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.opex_pct),
+            step=0.01,
+        )
 
-    st.markdown("---")
-    st.markdown("### Investor Pushback Scenario")
+        st.session_state.fixed_overhead = st.number_input(
+            "Fixed annual overhead ($)",
+            min_value=0.0,
+            value=float(st.session_state.fixed_overhead),
+            step=10000.0,
+        )
 
-    st.session_state.pushback_pct = st.number_input(
-        "Reduce revenue assumptions by %",
-        min_value=0,
-        max_value=100,
-        value=int(st.session_state.pushback_pct),
-        step=5,
-    )
+        st.session_state.starting_cash = st.number_input(
+            "Starting cash ($)",
+            min_value=0.0,
+            value=float(st.session_state.starting_cash),
+            step=10000.0,
+        )
 
-    st.session_state.investor_feedback = st.text_area(
-        "Investor feedback notes",
-        value=st.session_state.investor_feedback,
-        height=100,
-    )
+        st.markdown("---")
+        st.markdown("### Investor Pushback Scenario")
 
-    if st.button("Apply Pushback Scenario"):
-        factor = 1 - (st.session_state.pushback_pct / 100)
-        st.session_state.year1_units = int(st.session_state.year1_units * factor)
-        st.success(f"Applied investor pushback: reduced Year 1 units by {st.session_state.pushback_pct}%.")
+        st.session_state.pushback_pct = st.number_input(
+            "Reduce revenue assumptions by %",
+            min_value=0,
+            max_value=100,
+            value=int(st.session_state.pushback_pct),
+            step=5,
+        )
 
+        st.session_state.investor_feedback = st.text_area(
+            "Investor feedback notes",
+            value=st.session_state.investor_feedback,
+            height=100,
+        )
+
+        if st.button("Apply Pushback Scenario"):
+            factor = 1 - (st.session_state.pushback_pct / 100)
+            st.session_state.year1_units = int(st.session_state.year1_units * factor)
+            st.success(f"Applied investor pushback: reduced Year 1 units by {st.session_state.pushback_pct}%.")
 
 # ==================================================
 # BUILD MODEL
@@ -2064,89 +2131,15 @@ benchmark_feedback = build_benchmark_feedback(
     st.session_state.opex_pct,
 )
 
+if st.session_state.tp_step < 3:
+    st.info("Complete Steps 1 and 2 to unlock your financial dashboard and AI review.")
+    st.divider()
+    render_nav("bottom")
+    st.stop()
 
 # ==================================================
 # TOP ACTION BUTTONS
 # ==================================================
-col_top1, col_top2, col_top3, col_top4, _ = st.columns([1.2, 1.6, 1.4, 1.4, 2.8])
-
-with col_top1:
-    if st.button("Get Investor Verdict", key="run_vc_sanity_top"):
-        with st.spinner("Analyzing investability..."):
-            sanity_text = run_ai_sanity_check(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.sanity_output = sanity_text
-        st.success("Investor verdict generated.")
-
-with col_top2:
-    if st.button("Generate Investor Materials", key="generate_full_plan_top"):
-        with st.spinner("Generating investor materials..."):
-            plan_text = generate_business_plan_and_deck(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.business_plan_output = plan_text
-        st.success("Business plan and pitch deck content generated.")
-
-with col_top3:
-    if st.button("Generate VC Questions", key="generate_vc_questions_top"):
-        with st.spinner("Generating investor questions..."):
-            interrogation_text = run_ai_investor_interrogation(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                st.session_state.starting_cash,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.interrogation_output = interrogation_text
-        st.success("Investor questions generated.")
-
-with col_top4:
-    if st.button("Build Founder Answers", key="build_founder_answers_top"):
-        with st.spinner("Building founder answer prep..."):
-            answer_text = run_ai_founder_answer_builder(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                st.session_state.starting_cash,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.answer_builder_output = answer_text
-        st.success("Founder answer prep generated.")
 
 import math
 
@@ -2155,7 +2148,7 @@ def safe_float(value, default=0.0):
         if value is None or value == "":
             return default
         return float(value)
-    except:
+    except (TypeError, ValueError):
         return default
 
 
@@ -2431,250 +2424,46 @@ def generate_ai_explanations(
     severity_score = min(severity_score, 100)
     return explanations, suggested_fixes, severity_score
 
+import math
 
-def apply_suggested_fixes_to_session(suggested_fixes):
-    """
-    Applies suggested values back into Streamlit session state.
-    Only updates keys that already exist or are used in your app.
-    """
-    for key, value in suggested_fixes.items():
-        st.session_state[key] = value
+def safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def get_industry_benchmarks(industry: str):
+    industry = (industry or "").strip().lower()
+    benchmark_map = {
+        "saas": {"price_low": 15, "price_high": 99, "growth_low": 0.10, "growth_high": 0.30, "margin_low": 0.70, "margin_high": 0.90, "cogs_low": 0.10, "cogs_high": 0.30, "churn_low": 0.02, "churn_high": 0.08},
+        "e-commerce": {"price_low": 20, "price_high": 120, "growth_low": 0.05, "growth_high": 0.20, "margin_low": 0.30, "margin_high": 0.60, "cogs_low": 0.40, "cogs_high": 0.70, "churn_low": 0.05, "churn_high": 0.15},
+        "service": {"price_low": 100, "price_high": 5000, "growth_low": 0.05, "growth_high": 0.25, "margin_low": 0.40, "margin_high": 0.80, "cogs_low": 0.20, "cogs_high": 0.60, "churn_low": 0.01, "churn_high": 0.10},
+        "consulting": {"price_low": 500, "price_high": 10000, "growth_low": 0.05, "growth_high": 0.25, "margin_low": 0.50, "margin_high": 0.85, "cogs_low": 0.15, "cogs_high": 0.50, "churn_low": 0.01, "churn_high": 0.08},
+        "marketplace": {"price_low": 10, "price_high": 100, "growth_low": 0.08, "growth_high": 0.25, "margin_low": 0.50, "margin_high": 0.85, "cogs_low": 0.15, "cogs_high": 0.50, "churn_low": 0.03, "churn_high": 0.10},
+    }
+    return benchmark_map.get(industry, {"price_low": 20, "price_high": 100, "growth_low": 0.05, "growth_high": 0.20, "margin_low": 0.40, "margin_high": 0.80, "cogs_low": 0.20, "cogs_high": 0.60, "churn_low": 0.02, "churn_high": 0.10})
+
+def clamp(value, low, high):
+    return max(low, min(value, high))
 
 # ==================================================
 # DASHBOARD
 # ==================================================
-year1_revenue = projection_df.loc[0, "Revenue"]
-year3_revenue = projection_df.loc[2, "Revenue"]
-year3_gross_profit = projection_df.loc[2, "Gross Profit"]
-year3_gross_margin = projection_df.loc[2, "Gross Margin %"]
-year3_net_income = projection_df.loc[2, "Net Income"]
-year3_cash = projection_df.loc[2, "Ending Cash"]
-
-net_income_class = "kpi-green" if year3_net_income >= 0 else "kpi-red"
-cash_class = "kpi-green" if year3_cash >= 0 else "kpi-red"
-
-st.subheader("AI Explanation Engine")
-
-industry_value = st.session_state.get("industry", "saas")
-
-# ✅ Use YOUR actual variables
-startup_price_value = st.session_state.get("price_per_unit", 29.0)
-
-price = safe_float(startup_price_value, 1)
-cost = safe_float(st.session_state.get("cost_per_unit", 0.2))
-
-# Convert to %
-cogs_percent_value = cost / price if price > 0 else 0.2
-
-monthly_growth_rate_value = safe_float(st.session_state.get("growth_y2", 0.10))
-
-churn_rate_value = 0.05  # keep simple for now
-
-explanations, suggested_fixes, severity_score = generate_ai_explanations(
-    industry=industry_value,
-    business_model="general",
-    startup_price=startup_price_value,
-    monthly_growth_rate=monthly_growth_rate_value,
-    cogs_percent=cogs_percent_value,
-    churn_rate=churn_rate_value
-)
-
-# Save for export/reporting if needed
-st.session_state["ai_explanations"] = explanations
-st.session_state["suggested_fixes"] = suggested_fixes
-st.session_state["assumption_severity_score"] = severity_score
-
-if severity_score >= 50:
-    st.warning(f"Your model has several assumptions that may be hard to defend. Risk level: {severity_score}/100")
-elif severity_score >= 20:
-    st.info(f"Your model has a few assumptions worth reviewing. Risk level: {severity_score}/100")
-else:
-    st.success(f"Your core assumptions look reasonably grounded. Risk level: {severity_score}/100")
-
-for i, item in enumerate(explanations, 1):
-    with st.expander(f"{i}. {item['title']} ({item['severity']})", expanded=(i == 1)):
-        st.markdown(f"**What we saw:** {escape_dollar_signs(item['reason'])}")
-        st.markdown(f"**Why it matters:** {escape_dollar_signs(item['why_it_matters'])}")
-        st.markdown(f"**Suggested adjustment:** {escape_dollar_signs(item['suggestion'])}")
-
-st.subheader("Optimize My Model")
-
-if suggested_fixes and len(suggested_fixes) > 0:
-    
-    label_map = {
-        "startup_price": "Price per Unit",
-        "monthly_growth_rate": "Year 2 Growth Rate",
-        "cogs_percent": "Cost per Unit",
-        "churn_rate": "Churn Rate"
-    }
-
-    preview_rows = []
-
-    for key, value in suggested_fixes.items():
-        if key == "startup_price":
-            current_val = st.session_state.get("price_per_unit", "—")
-        elif key == "monthly_growth_rate":
-            current_val = st.session_state.get("growth_y2", "—")
-        elif key == "cogs_percent":
-            current_val = st.session_state.get("cost_per_unit", "—")
-        else:
-            current_val = st.session_state.get(key, "—")
-
-        preview_rows.append({
-            "Field": label_map.get(key, key),
-            "Current Value": current_val,
-            "Suggested Value": value
-        })
-
-    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
-
-    if st.button("Apply Suggested Fixes"):
-        if "startup_price" in suggested_fixes:
-            st.session_state.price_per_unit = suggested_fixes["startup_price"]
-
-        if "monthly_growth_rate" in suggested_fixes:
-            st.session_state.growth_y2 = suggested_fixes["monthly_growth_rate"]
-
-        if "cogs_percent" in suggested_fixes:
-            new_price = safe_float(st.session_state.get("price_per_unit", 1), 1)
-            st.session_state.cost_per_unit = round(new_price * suggested_fixes["cogs_percent"], 2)
-
-        if "churn_rate" in suggested_fixes:
-            st.session_state.churn_rate = suggested_fixes["churn_rate"]
-
-        st.success("Suggested fixes applied.")
-        st.rerun()
-else:
-    st.info("No major fixes needed based on the current assumptions.")
-
-st.markdown("---")
-st.subheader("Financial Dashboard")
-
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi4, kpi5, kpi6 = st.columns(3)
-
-with kpi1:
-    st.markdown(f"""
-    <div class="kpi-card kpi-blue">
-        <div class="kpi-title">Year 1 Revenue</div>
-        <div class="kpi-value">${year1_revenue:,.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with kpi2:
-    st.markdown(f"""
-    <div class="kpi-card kpi-green">
-        <div class="kpi-title">Year 3 Revenue</div>
-        <div class="kpi-value">${year3_revenue:,.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with kpi3:
-    st.markdown(f"""
-    <div class="kpi-card kpi-blue">
-        <div class="kpi-title">Gross Profit</div>
-        <div class="kpi-value">${year3_gross_profit:,.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with kpi4:
-    st.markdown(f"""
-    <div class="kpi-card kpi-gold">
-        <div class="kpi-title">Gross Margin</div>
-        <div class="kpi-value">{year3_gross_margin:.1%}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with kpi5:
-    st.markdown(f"""
-    <div class="kpi-card {net_income_class}">
-        <div class="kpi-title">Net Income</div>
-        <div class="kpi-value">${year3_net_income:,.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with kpi6:
-    st.markdown(f"""
-    <div class="kpi-card {cash_class}">
-        <div class="kpi-title">Ending Cash</div>
-        <div class="kpi-value">${year3_cash:,.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-chart_col1, chart_col2 = st.columns(2)
-
-with chart_col1:
-    st.markdown("#### Revenue / Net Income / Ending Cash")
-    dashboard_chart_df = projection_df.set_index("Year")[["Revenue", "Net Income", "Ending Cash"]]
-    st.line_chart(dashboard_chart_df, use_container_width=True)
-
-with chart_col2:
-    st.markdown("#### Revenue vs COGS vs Operating Expenses")
-    compare_df = projection_df.set_index("Year")[["Revenue", "COGS", "Operating Expenses"]]
-    st.bar_chart(compare_df, use_container_width=True)
-
-summary_col1, summary_col2 = st.columns([2, 1])
-
-with summary_col1:
-    st.markdown("#### Profit & Loss Summary")
-    st.dataframe(display_pnl, use_container_width=True, hide_index=True)
-
-with summary_col2:
-    st.markdown("#### Investor Snapshot")
-    st.markdown(f"""
-    <div class="snapshot-card">
-        <p><strong>Industry:</strong> {st.session_state.industry}</p>
-        <p><strong>Customer Segment:</strong> {detect_customer_segment(st.session_state.idea, st.session_state.industry)}</p>
-        <p><strong>Overall Readiness:</strong> {scorecard['Overall Investor Readiness']}</p>
-        <p><strong>Pricing Realism:</strong> {scorecard['Pricing Realism']}</p>
-        <p><strong>Sales Volume:</strong> {scorecard['Sales Volume']}</p>
-        <p><strong>Growth Assumptions:</strong> {scorecard['Growth Assumptions']}</p>
-        <p><strong>Margin Quality:</strong> {scorecard['Margin Quality']}</p>
-        <p><strong>Cash Viability:</strong> {scorecard['Cash Viability']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("#### Trust Summary")
-st.info(
-    "TurboPitch combines founder inputs, structured financial modeling, benchmark logic, market reality checks, and AI interpretation. "
-    "It is designed as a decision-support tool to improve investor readiness, not as a guarantee of funding or business success."
-)
-
-if st.session_state.assumption_mode == "Help Me Generate Them":
-    st.markdown("#### Starter Assumption Mode")
-    st.info(
-        "TurboPitch generated a suggested starting model based on internal industry benchmark ranges, business model heuristics, "
-        "Reality Engine logic, and financial modeling logic. These values are intended as a starting point for refinement, not final answers."
-    )
-
-    if st.session_state.get("assumption_helper_output"):
-        st.markdown("#### Suggested Assumption Explanation")
-        st.markdown(clean_ai_text(st.session_state.assumption_helper_output))
-
 
 # ==================================================
-# TABS
+# STEP 3 — AI REVIEW
 # ==================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-    "Investor Review",
-    "Benchmarking",
-    "Investor Q&A",
-    "Answer Builder",
-    "Business Plan & Deck",
-    "Financial Model",
-    "Charts",
-    "Downloads",
-    "How TurboPitch Works",
-    "Assumption Builder",
-])
+if st.session_state.tp_step == 3:
+    st.markdown("## Your Model Review")
 
-with tab1:
-    st.markdown("## Investor Readiness Scorecard")
+    st.markdown("### Readiness Scorecard")
     for label, status in scorecard.items():
         st.write(f"{score_metric(status)} **{label}:** {status}")
 
     st.markdown("---")
-    st.markdown("### Assumption Risk Summary")
+    st.markdown("### Risk Summary")
     st.info(
         f"{warning_summary['icon']} {warning_summary['overall']}  |  "
         f"Red Flags: {warning_summary['red_count']}  |  "
@@ -2682,197 +2471,363 @@ with tab1:
     )
 
     st.markdown("---")
-    st.markdown("### Reality Engine")
-    st.write(f"{score_metric(reality_engine_output['overall'])} **Overall Reality Check:** {reality_engine_output['overall']}")
+    st.markdown("### Reality Check")
+    st.write(f"{score_metric(reality_engine_output['overall'])} **Overall:** {reality_engine_output['overall']}")
     st.write(reality_engine_output["summary"])
-
     for label, item in reality_engine_output["checks"].items():
         st.write(f"{reality_status_icon(item['status'])} **{label}:** {item['message']}")
 
     st.markdown("---")
-    st.markdown("### Rule-Based Assumption Review")
+    st.markdown("### Assumption Warnings")
     for warning in warnings:
         st.write(warning)
 
-    st.markdown("---")
-    st.markdown("### AI Investor Verdict, Risks & Recommendations")
+# ==================================================
+# STEP 4 — GENERATE MATERIALS
+# ==================================================
+elif st.session_state.tp_step == 4:
 
-    if st.button("Run VC Analysis", key="run_ai_sanity_tab"):
-        with st.spinner("Reviewing startup assumptions..."):
-            sanity_text = run_ai_sanity_check(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.sanity_output = sanity_text
+    industry_value = st.session_state.get("industry", "saas")
+    startup_price_value = st.session_state.get("price_per_unit", 29.0)
+    price = safe_float(startup_price_value, 1)
+    cost = safe_float(st.session_state.get("cost_per_unit", 0.2))
+    cogs_percent_value = cost / price if price > 0 else 0.2
+    annual_growth_y2 = safe_float(st.session_state.get("growth_y2", 0.10))
+    monthly_growth_rate_value = (1 + annual_growth_y2) ** (1/12) - 1
+    churn_rate_value = 0.05
 
-    if st.session_state.get("sanity_output"):
-        st.markdown(clean_ai_text(st.session_state.sanity_output))
-        st.markdown("---")
-        render_ai_methodology_note()
-    else:
-        st.info("No investor review available yet. Click 'Get Investor Verdict' or 'Run VC Analysis'.")
-
-with tab2:
-    st.markdown("## Industry Benchmark Feedback")
-    st.write(f"Selected industry: **{st.session_state.industry}**")
-
-    for item in benchmark_feedback:
-        if item == "":
-            st.markdown("---")
-        elif item == "Suggested Adjustments":
-            st.markdown("### Suggested Adjustments")
-        else:
-            st.write(item)
-
-    st.markdown("---")
-    st.markdown("### Benchmark Methodology")
-    st.markdown(
-        """
-Benchmark comparisons in TurboPitch are based on internal benchmark ranges by business model.
-These are intended to reflect directional industry norms, investor expectations, and common startup operating patterns.
-
-They are best used as a credibility check, not as a substitute for full market diligence.
-        """
+    explanations, suggested_fixes, severity_score = generate_ai_explanations(
+        industry=industry_value,
+        business_model="general",
+        startup_price=startup_price_value,
+        monthly_growth_rate=monthly_growth_rate_value,
+        cogs_percent=cogs_percent_value,
+        churn_rate=churn_rate_value
     )
 
-with tab3:
-    st.markdown("## Investor Questions")
-    st.write("Generate tough investor-style questions to pressure-test the pitch before a real meeting.")
+    st.session_state["ai_explanations"] = explanations
+    st.session_state["suggested_fixes"] = suggested_fixes
+    st.session_state["assumption_severity_score"] = severity_score
 
-    if st.button("Generate VC Questions", key="generate_vc_questions_tab"):
-        with st.spinner("Generating investor questions..."):
-            interrogation_text = run_ai_investor_interrogation(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                st.session_state.starting_cash,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.interrogation_output = interrogation_text
+    col_top1, col_top2, col_top3, col_top4, _ = st.columns([1.2, 1.6, 1.4, 1.4, 2.8])
 
-    if st.session_state.get("interrogation_output"):
-        st.markdown(clean_ai_text(st.session_state.interrogation_output))
-        st.markdown("---")
-        render_ai_methodology_note()
-    else:
-        st.info("No investor questions yet. Click 'Generate VC Questions'.")
+    with col_top1:
+        if st.button("Get Investor Verdict", key="run_vc_sanity_top"):
+            with st.spinner("Analyzing..."):
+                sanity_text = run_ai_sanity_check(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, projection_df, reality_engine_output,
+                )
+                st.session_state.sanity_output = sanity_text
+            st.success("Investor verdict generated.")
 
-with tab4:
-    st.markdown("## Founder Answer Prep")
-    st.write("Prepare stronger answers to likely investor objections before your pitch.")
+    with col_top2:
+        if st.button("Generate Investor Materials", key="generate_full_plan_top"):
+            with st.spinner("Generating materials..."):
+                plan_text = generate_business_plan_and_deck(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, projection_df, reality_engine_output,
+                )
+                st.session_state.business_plan_output = plan_text
+            st.success("Materials generated.")
 
-    if st.button("Build Founder Answers", key="build_founder_answers_tab"):
-        with st.spinner("Building founder answer prep..."):
-            answer_text = run_ai_founder_answer_builder(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                st.session_state.starting_cash,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.answer_builder_output = answer_text
+    with col_top3:
+        if st.button("Generate VC Questions", key="generate_vc_questions_top"):
+            with st.spinner("Generating questions..."):
+                interrogation_text = run_ai_investor_interrogation(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, st.session_state.starting_cash,
+                    projection_df, reality_engine_output,
+                )
+                st.session_state.interrogation_output = interrogation_text
+            st.success("Questions generated.")
 
-    if st.session_state.get("answer_builder_output"):
-        st.markdown(clean_ai_text(st.session_state.answer_builder_output))
-        st.markdown("---")
-        render_ai_methodology_note()
-    else:
-        st.info("No founder answer prep yet. Click 'Build Founder Answers'.")
-
-with tab5:
-    st.markdown("### Full Business Plan & Pitch Deck Content")
-
-    if st.button("Build Business Plan + Deck", key="generate_plan_tab"):
-        with st.spinner("Building investor materials..."):
-            plan_text = generate_business_plan_and_deck(
-                st.session_state.idea,
-                st.session_state.industry,
-                st.session_state.price_per_unit,
-                st.session_state.year1_units,
-                st.session_state.growth_y2,
-                st.session_state.growth_y3,
-                st.session_state.cost_per_unit,
-                st.session_state.opex_pct,
-                st.session_state.fixed_overhead,
-                projection_df,
-                reality_engine_output,
-            )
-            st.session_state.business_plan_output = plan_text
-
-    if st.session_state.get("business_plan_output"):
-        st.markdown(clean_ai_text(st.session_state.business_plan_output))
-        st.markdown("---")
-        render_ai_methodology_note()
-    else:
-        st.info("No business plan available yet. Click 'Generate Investor Materials' or 'Build Business Plan + Deck'.")
-
-with tab6:
-    st.dataframe(display_pnl, use_container_width=True, hide_index=True)
-
-with tab7:
-    chart_df = projection_df.set_index("Year")[["Revenue", "Net Income", "Ending Cash"]]
-    st.line_chart(chart_df, use_container_width=True)
-
-with tab8:
-    st.markdown("### Export Investor Materials")
-    st.write("Download a full business plan, financial package, or presentation-ready pitch deck.")
-
-with tab9:
-    render_trust_center()
-
-with tab10:
-    st.markdown("## Assumption Builder")
-    st.write("Use this section if you are unsure how to price your product or what assumptions to start with.")
-
-    if st.session_state.assumption_mode == "Help Me Generate Them":
-        st.markdown("### Current Suggested Starter Assumptions")
-        st.write(f"**Price per unit:** ${st.session_state.price_per_unit:,.2f}")
-        st.write(f"**Year 1 units sold:** {st.session_state.year1_units:,}")
-        st.write(f"**Year 2 growth:** {st.session_state.growth_y2:.0%}")
-        st.write(f"**Year 3 growth:** {st.session_state.growth_y3:.0%}")
-        st.write(f"**Cost per unit:** ${st.session_state.cost_per_unit:,.2f}")
-        st.write(f"**Operating expense %:** {st.session_state.opex_pct:.0%}")
-        st.write(f"**Fixed overhead:** ${st.session_state.fixed_overhead:,.0f}")
-        st.write(f"**Starting cash:** ${st.session_state.starting_cash:,.0f}")
-        st.write(f"**Detected customer segment:** {detect_customer_segment(st.session_state.idea, st.session_state.industry)}")
-        st.markdown("---")
-
-    st.markdown("### Reality Engine Preview")
-    for label, item in reality_engine_output["checks"].items():
-        st.write(f"{reality_status_icon(item['status'])} **{label}:** {item['message']}")
+    with col_top4:
+        if st.button("Build Founder Answers", key="build_founder_answers_top"):
+            with st.spinner("Building answers..."):
+                answer_text = run_ai_founder_answer_builder(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, st.session_state.starting_cash,
+                    projection_df, reality_engine_output,
+                )
+                st.session_state.answer_builder_output = answer_text
+            st.success("Founder answers built.")
 
     st.markdown("---")
+    st.subheader("AI Explanation Engine")
+
+    if severity_score >= 50:
+        st.warning(f"Your model has several assumptions that may be hard to defend. Risk level: {severity_score}/100")
+    elif severity_score >= 20:
+        st.info(f"Your model has a few assumptions worth reviewing. Risk level: {severity_score}/100")
+    else:
+        st.success(f"Your core assumptions look reasonably grounded. Risk level: {severity_score}/100")
+
+    for i, item in enumerate(explanations, 1):
+        with st.expander(f"{i}. {item['title']} ({item['severity']})", expanded=(i == 1)):
+            st.markdown(f"**What we saw:** {escape_dollar_signs(item['reason'])}")
+            st.markdown(f"**Why it matters:** {escape_dollar_signs(item['why_it_matters'])}")
+            st.markdown(f"**Suggested adjustment:** {escape_dollar_signs(item['suggestion'])}")
+
+    st.subheader("Optimize My Model")
+    if suggested_fixes and len(suggested_fixes) > 0:
+        label_map = {
+            "startup_price": "Price per Unit",
+            "monthly_growth_rate": "Year 2 Growth Rate",
+            "cogs_percent": "Cost per Unit",
+            "churn_rate": "Churn Rate"
+        }
+        preview_rows = []
+        for key, value in suggested_fixes.items():
+            if key == "startup_price":
+                current_val = st.session_state.get("price_per_unit", "—")
+            elif key == "monthly_growth_rate":
+                current_val = st.session_state.get("growth_y2", "—")
+            elif key == "cogs_percent":
+                current_val = st.session_state.get("cost_per_unit", "—")
+            else:
+                current_val = st.session_state.get(key, "—")
+            preview_rows.append({
+                "Field": label_map.get(key, key),
+                "Current Value": current_val,
+                "Suggested Value": value
+            })
+        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+        if st.button("Apply Suggested Fixes"):
+            if "startup_price" in suggested_fixes:
+                st.session_state.price_per_unit = suggested_fixes["startup_price"]
+            if "monthly_growth_rate" in suggested_fixes:
+                st.session_state.growth_y2 = suggested_fixes["monthly_growth_rate"]
+            if "cogs_percent" in suggested_fixes:
+                new_price = safe_float(st.session_state.get("price_per_unit", 1), 1)
+                st.session_state.cost_per_unit = round(new_price * suggested_fixes["cogs_percent"], 2)
+            if "churn_rate" in suggested_fixes:
+                st.session_state.churn_rate = suggested_fixes["churn_rate"]
+            st.success("Suggested fixes applied.")
+            st.rerun()
+    else:
+        st.info("No major fixes needed based on the current assumptions.")
+
+    st.markdown("---")
+    st.subheader("Financial Dashboard")
+
+    year1_revenue = projection_df.loc[0, "Revenue"]
+    year3_revenue = projection_df.loc[2, "Revenue"]
+    year3_gross_profit = projection_df.loc[2, "Gross Profit"]
+    year3_gross_margin = projection_df.loc[2, "Gross Margin %"]
+    year3_net_income = projection_df.loc[2, "Net Income"]
+    year3_cash = projection_df.loc[2, "Ending Cash"]
+
+    net_income_class = "kpi-green" if year3_net_income >= 0 else "kpi-red"
+    cash_class = "kpi-green" if year3_cash >= 0 else "kpi-red"
+
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi4, kpi5, kpi6 = st.columns(3)
+
+    with kpi1:
+        st.markdown(f'<div class="kpi-card kpi-blue"><div class="kpi-title">Year 1 Revenue</div><div class="kpi-value">${year1_revenue:,.0f}</div></div>', unsafe_allow_html=True)
+    with kpi2:
+        st.markdown(f'<div class="kpi-card kpi-green"><div class="kpi-title">Year 3 Revenue</div><div class="kpi-value">${year3_revenue:,.0f}</div></div>', unsafe_allow_html=True)
+    with kpi3:
+        st.markdown(f'<div class="kpi-card kpi-blue"><div class="kpi-title">Gross Profit</div><div class="kpi-value">${year3_gross_profit:,.0f}</div></div>', unsafe_allow_html=True)
+    with kpi4:
+        st.markdown(f'<div class="kpi-card kpi-gold"><div class="kpi-title">Gross Margin</div><div class="kpi-value">{year3_gross_margin:.1%}</div></div>', unsafe_allow_html=True)
+    with kpi5:
+        st.markdown(f'<div class="kpi-card {net_income_class}"><div class="kpi-title">Net Income</div><div class="kpi-value">${year3_net_income:,.0f}</div></div>', unsafe_allow_html=True)
+    with kpi6:
+        st.markdown(f'<div class="kpi-card {cash_class}"><div class="kpi-title">Ending Cash</div><div class="kpi-value">${year3_cash:,.0f}</div></div>', unsafe_allow_html=True)
+
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        st.markdown("#### Revenue / Net Income / Ending Cash")
+        dashboard_chart_df = projection_df.set_index("Year")[["Revenue", "Net Income", "Ending Cash"]]
+        st.line_chart(dashboard_chart_df, use_container_width=True)
+    with chart_col2:
+        st.markdown("#### Revenue vs COGS vs Operating Expenses")
+        compare_df = projection_df.set_index("Year")[["Revenue", "COGS", "Operating Expenses"]]
+        st.bar_chart(compare_df, use_container_width=True)
+
+    summary_col1, summary_col2 = st.columns([2, 1])
+    with summary_col1:
+        st.markdown("#### Profit & Loss Summary")
+        st.dataframe(display_pnl, use_container_width=True, hide_index=True)
+    with summary_col2:
+        st.markdown("#### Snapshot")
+        st.markdown(f"""
+        <div class="snapshot-card">
+            <p><strong>Industry:</strong> {st.session_state.industry}</p>
+            <p><strong>Customer Segment:</strong> {detect_customer_segment(st.session_state.idea, st.session_state.industry)}</p>
+            <p><strong>Overall Readiness:</strong> {scorecard['Overall Investor Readiness']}</p>
+            <p><strong>Pricing Realism:</strong> {scorecard['Pricing Realism']}</p>
+            <p><strong>Sales Volume:</strong> {scorecard['Sales Volume']}</p>
+            <p><strong>Growth Assumptions:</strong> {scorecard['Growth Assumptions']}</p>
+            <p><strong>Margin Quality:</strong> {scorecard['Margin Quality']}</p>
+            <p><strong>Cash Viability:</strong> {scorecard['Cash Viability']}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
     if st.session_state.get("assumption_helper_output"):
+        st.markdown("#### Suggested Assumption Explanation")
         st.markdown(clean_ai_text(st.session_state.assumption_helper_output))
-        st.markdown("---")
-        render_ai_methodology_note()
-    else:
-        st.info("No suggested assumptions yet. In the sidebar, choose 'Help Me Generate Them' and click 'Generate Suggested Assumptions'.")
 
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+        "Investor Review", "Benchmarking", "Investor Q&A", "Answer Builder",
+        "Business Plan & Deck", "Financial Model", "Charts", "Downloads",
+        "How TurboPitch Works", "Assumption Builder",
+    ])
+
+    with tab1:
+        st.markdown("## Investor Readiness Scorecard")
+        for label, status in scorecard.items():
+            st.write(f"{score_metric(status)} **{label}:** {status}")
+        st.markdown("---")
+        st.markdown("### Risk Summary")
+        st.info(f"{warning_summary['icon']} {warning_summary['overall']}  |  Red Flags: {warning_summary['red_count']}  |  Watch Items: {warning_summary['amber_count']}")
+        st.markdown("---")
+        st.markdown("### Reality Check")
+        st.write(f"{score_metric(reality_engine_output['overall'])} **Overall:** {reality_engine_output['overall']}")
+        st.write(reality_engine_output["summary"])
+        for label, item in reality_engine_output["checks"].items():
+            st.write(f"{reality_status_icon(item['status'])} **{label}:** {item['message']}")
+        st.markdown("---")
+        st.markdown("### Assumption Warnings")
+        for warning in warnings:
+            st.write(warning)
+        st.markdown("---")
+        st.markdown("### AI Investor Verdict")
+        if st.button("Run VC Analysis", key="run_ai_sanity_tab"):
+            with st.spinner("Reviewing assumptions..."):
+                sanity_text = run_ai_sanity_check(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, projection_df, reality_engine_output,
+                )
+                st.session_state.sanity_output = sanity_text
+        if st.session_state.get("sanity_output"):
+            st.markdown(clean_ai_text(st.session_state.sanity_output))
+            st.markdown("---")
+            render_ai_methodology_note()
+        else:
+            st.info("No investor review yet. Click 'Get Investor Verdict' or 'Run VC Analysis'.")
+
+    with tab2:
+        st.markdown("## Industry Benchmark Feedback")
+        st.write(f"Selected industry: **{st.session_state.industry}**")
+        for item in benchmark_feedback:
+            if item == "":
+                st.markdown("---")
+            elif item == "Suggested Adjustments":
+                st.markdown("### Suggested Adjustments")
+            else:
+                st.write(item)
+
+    with tab3:
+        st.markdown("## Investor Questions")
+        if st.button("Generate VC Questions", key="generate_vc_questions_tab"):
+            with st.spinner("Generating questions..."):
+                interrogation_text = run_ai_investor_interrogation(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, st.session_state.starting_cash,
+                    projection_df, reality_engine_output,
+                )
+                st.session_state.interrogation_output = interrogation_text
+        if st.session_state.get("interrogation_output"):
+            st.markdown(clean_ai_text(st.session_state.interrogation_output))
+        else:
+            st.info("No questions yet. Click 'Generate VC Questions'.")
+
+    with tab4:
+        st.markdown("## Founder Answer Prep")
+        if st.button("Build Founder Answers", key="build_founder_answers_tab"):
+            with st.spinner("Building answers..."):
+                answer_text = run_ai_founder_answer_builder(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, st.session_state.starting_cash,
+                    projection_df, reality_engine_output,
+                )
+                st.session_state.answer_builder_output = answer_text
+        if st.session_state.get("answer_builder_output"):
+            st.markdown(clean_ai_text(st.session_state.answer_builder_output))
+        else:
+            st.info("No answers yet. Click 'Build Founder Answers'.")
+
+    with tab5:
+        st.markdown("### Business Plan & Pitch Deck")
+        if st.button("Build Business Plan + Deck", key="generate_plan_tab"):
+            with st.spinner("Building materials..."):
+                plan_text = generate_business_plan_and_deck(
+                    st.session_state.idea, st.session_state.industry,
+                    st.session_state.price_per_unit, st.session_state.year1_units,
+                    st.session_state.growth_y2, st.session_state.growth_y3,
+                    st.session_state.cost_per_unit, st.session_state.opex_pct,
+                    st.session_state.fixed_overhead, projection_df, reality_engine_output,
+                )
+                st.session_state.business_plan_output = plan_text
+        if st.session_state.get("business_plan_output"):
+            st.markdown(clean_ai_text(st.session_state.business_plan_output))
+        else:
+            st.info("No business plan yet. Click 'Generate Investor Materials' or 'Build Business Plan + Deck'.")
+
+    with tab6:
+        st.dataframe(display_pnl, use_container_width=True, hide_index=True)
+
+    with tab7:
+        chart_df = projection_df.set_index("Year")[["Revenue", "Net Income", "Ending Cash"]]
+        st.line_chart(chart_df, use_container_width=True)
+
+    with tab8:
+        st.markdown("### Export Your Materials")
+        st.write("Download your files below.")
+
+    with tab9:
+        render_trust_center()
+
+    with tab10:
+        st.markdown("## Assumption Builder")
+        if st.session_state.assumption_mode == "Help Me Generate Them":
+            st.write(f"**Price per unit:** ${st.session_state.price_per_unit:,.2f}")
+            st.write(f"**Year 1 units sold:** {st.session_state.year1_units:,}")
+            st.write(f"**Year 2 growth:** {st.session_state.growth_y2:.0%}")
+            st.write(f"**Year 3 growth:** {st.session_state.growth_y3:.0%}")
+            st.write(f"**Cost per unit:** ${st.session_state.cost_per_unit:,.2f}")
+            st.write(f"**Operating expense %:** {st.session_state.opex_pct:.0%}")
+            st.write(f"**Fixed overhead:** ${st.session_state.fixed_overhead:,.0f}")
+            st.write(f"**Starting cash:** ${st.session_state.starting_cash:,.0f}")
+            st.write(f"**Detected segment:** {detect_customer_segment(st.session_state.idea, st.session_state.industry)}")
+            st.markdown("---")
+        for label, item in reality_engine_output["checks"].items():
+            st.write(f"{reality_status_icon(item['status'])} **{label}:** {item['message']}")
+        if st.session_state.get("assumption_helper_output"):
+            st.markdown(clean_ai_text(st.session_state.assumption_helper_output))
+        else:
+            st.info("No suggested assumptions yet.")
+
+# ==================================================
+# STEP 5 — DOWNLOADS
+# ==================================================
+elif st.session_state.tp_step == 5:
+    st.markdown("### Download Your Investor Materials")
+    st.write("Everything is ready. Download your files below.")
 
 # ==================================================
 # DOWNLOAD MATERIALS
@@ -3188,22 +3143,6 @@ for cell in ws_method[3]:
     cell.alignment = Alignment(horizontal="center", vertical="center")
     cell.border = thin_border
 
-# ---------------- Methodology Sheet ----------------
-ws_method = wb.create_sheet("Methodology")
-ws_method.merge_cells("A1:B1")
-ws_method["A1"] = "TurboPitch Methodology"
-ws_method["A1"].font = title_font
-ws_method["A1"].alignment = Alignment(horizontal="center", vertical="center")
-
-ws_method["A3"] = "Section"
-ws_method["B3"] = "Description"
-
-for cell in ws_method[3]:
-    cell.fill = header_fill
-    cell.font = header_font
-    cell.alignment = Alignment(horizontal="center", vertical="center")
-    cell.border = thin_border
-
 methodology_rows = [
     (
         "Core Purpose",
@@ -3414,21 +3353,39 @@ prs.save(ppt_buffer)
 ppt_buffer.seek(0)
 
 # ---------------- Downloads UI ----------------
-with tab8:
+if st.session_state.tp_step == 4:
+    with tab8:
+        st.download_button(
+            label="Download Business Plan (Word)",
+            data=doc_buffer,
+            file_name="turbopitch_business_plan.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        st.download_button(
+            label="Download Financial Model (Excel)",
+            data=excel_buffer,
+            file_name="turbopitch_financial_model.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.download_button(
+            label="Download Pitch Deck (PowerPoint)",
+            data=ppt_buffer,
+            file_name="turbopitch_pitch_deck.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+elif st.session_state.tp_step == 5:
     st.download_button(
         label="Download Business Plan (Word)",
         data=doc_buffer,
         file_name="turbopitch_business_plan.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
-
     st.download_button(
         label="Download Financial Model (Excel)",
         data=excel_buffer,
         file_name="turbopitch_financial_model.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
     st.download_button(
         label="Download Pitch Deck (PowerPoint)",
         data=ppt_buffer,
@@ -3436,3 +3393,9 @@ with tab8:
         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
 
+# ==================================================
+# NAVIGATION BUTTONS
+# ==================================================
+
+st.divider()
+render_nav("bottom")
