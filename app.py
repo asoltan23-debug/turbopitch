@@ -22,7 +22,8 @@ from pptx.dml.color import RGBColor
 # ==================================================
 # OPENAI CLIENT
 # ==================================================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=openai_api_key) if openai_api_key else OpenAI()
 
 
 # ==================================================
