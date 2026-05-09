@@ -4,6 +4,7 @@ import re
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 from openai import OpenAI
@@ -16,14 +17,14 @@ from openpyxl.drawing.image import Image as XLImage
 from pptx import Presentation
 from pptx.util import Inches as PPTInches, Pt
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 
 
 # ==================================================
 # OPENAI CLIENT
 # ==================================================
-openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
-client = OpenAI(api_key=openai_api_key) if openai_api_key else OpenAI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 # ==================================================
@@ -50,6 +51,14 @@ step_labels = {
 }
 
 def next_step():
+    if st.session_state.tp_step == 1 and not st.session_state.get("idea", "").strip():
+        st.warning("Please enter your startup idea before continuing.")
+        return
+
+    if st.session_state.tp_step == 4 and not st.session_state.get("business_plan_output", "").strip():
+        st.warning("Please generate your investor materials before going to Downloads.")
+        return
+
     if st.session_state.tp_step < 5:
         st.session_state.tp_step += 1
 
@@ -182,7 +191,6 @@ if st.session_state.tp_step == 1:
         "TurboPitch combines founder inputs, structured financial modeling, benchmark logic, market reality logic, "
         "and AI reasoning to evaluate startup assumptions through an investor-readiness lens."
     )
-
 # ==================================================
 # SESSION STATE DEFAULTS
 # ==================================================
@@ -355,21 +363,41 @@ def create_revenue_chart_image(df: pd.DataFrame):
     return img_stream
 
 
-def create_ppt_financial_chart_image(df: pd.DataFrame):
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(df["Year"], df["Revenue"], marker="o", label="Revenue")
-    ax.plot(df["Year"], df["Net Income"], marker="o", label="Net Income")
-    ax.plot(df["Year"], df["Ending Cash"], marker="o", label="Ending Cash")
-    ax.set_title("Financial Projection Overview")
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Dollars")
+def create_ppt_financial_chart_image(df: pd.DataFrame, theme=None):
+    fig, ax = plt.subplots(figsize=(9.2, 4.9))
+    x = np.arange(len(df["Year"]))
+    width = 0.24
+    chart_colors = (theme or {}).get("chart", ["#2563EB", "#38BDF8", "#0F1E3D"])
+
+    ax.bar(x - width, df["Revenue"], width=width, label="Revenue", color=chart_colors[0])
+    ax.bar(x, df["Net Income"], width=width, label="Net Income", color=chart_colors[1])
+    ax.bar(x + width, df["Ending Cash"], width=width, label="Ending Cash", color=chart_colors[2])
+
+    ax.set_title("Financial Projection Overview", fontsize=15, fontweight="bold", pad=14)
+    ax.set_xlabel("Year", fontsize=10)
+    ax.set_ylabel("USD", fontsize=10)
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["Year"])
     ax.yaxis.set_major_formatter(FuncFormatter(currency_tick_formatter))
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.set_facecolor("white")
+    fig.patch.set_facecolor("white")
+
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=3,
+        frameon=False,
+        fontsize=9,
+    )
 
     img_stream = io.BytesIO()
     fig.tight_layout()
-    fig.savefig(img_stream, format="png", dpi=200)
+    fig.savefig(img_stream, format="png", dpi=220, bbox_inches="tight")
     img_stream.seek(0)
     plt.close(fig)
     return img_stream
@@ -775,11 +803,60 @@ def opex_reality_check(industry: str, opex_pct: float, fixed_overhead: float, se
     }
 
 
-def run_reality_engine(idea, industry, price, year1_units, growth_y2, growth_y3, opex_pct, fixed_overhead):
+def financial_assumption_reality_check(industry, price, cost_per_unit=None, ending_cash_final=None):
+    if price <= 0:
+        return {
+            "status": "Red",
+            "message": "Price must be greater than zero before margin and cash assumptions can be evaluated."
+        }
+
+    if cost_per_unit is None:
+        return {
+            "status": "Green",
+            "message": "Financial assumption realism check was limited because COGS was not provided."
+        }
+
+    gross_margin = (price - cost_per_unit) / price
+    cogs_pct = cost_per_unit / price
+    benchmark = INDUSTRY_BENCHMARKS.get(industry, {})
+    gm_low, gm_high = benchmark.get("gross_margin", (0.40, 0.80))
+
+    if ending_cash_final is not None and ending_cash_final < 0:
+        return {
+            "status": "Red",
+            "message": f"Ending cash is negative at ${ending_cash_final:,.0f}. Investors will expect a clear funding plan, runway bridge, or burn reduction before trusting this model."
+        }
+
+    if cost_per_unit <= 0 or cogs_pct < 0.05:
+        return {
+            "status": "Red",
+            "message": f"COGS is only {cogs_pct:.1%} of revenue, creating a {gross_margin:.1%} gross margin. Investors will likely challenge whether core delivery costs are missing."
+        }
+
+    if gross_margin > 0.95 or gross_margin > gm_high + 0.10:
+        return {
+            "status": "Red",
+            "message": f"Gross margin is {gross_margin:.1%}, far above the typical {industry} range of {gm_low:.0%}-{gm_high:.0%}. This needs strong evidence or a more conservative COGS assumption."
+        }
+
+    if gross_margin > gm_high or gross_margin > 0.90:
+        return {
+            "status": "Yellow",
+            "message": f"Gross margin is {gross_margin:.1%}, above the typical {industry} range of {gm_low:.0%}-{gm_high:.0%}. Investors may ask for proof that COGS is complete."
+        }
+
+    return {
+        "status": "Green",
+        "message": f"Gross margin is {gross_margin:.1%} and ending cash does not show an obvious funding gap."
+    }
+
+
+def run_reality_engine(idea, industry, price, year1_units, growth_y2, growth_y3, opex_pct, fixed_overhead, cost_per_unit=None, ending_cash_final=None):
     pricing_check = pricing_market_check(idea, industry, price)
     volume_check = volume_market_check(idea, industry, year1_units)
     growth_check = growth_market_check(idea, industry, growth_y2, growth_y3)
     opex_check = opex_reality_check(industry, opex_pct, fixed_overhead, pricing_check["segment"])
+    financial_check = financial_assumption_reality_check(industry, price, cost_per_unit, ending_cash_final)
 
     checks = {
         "Customer Segment Detection": {
@@ -802,6 +879,10 @@ def run_reality_engine(idea, industry, price, year1_units, growth_y2, growth_y3,
             "status": opex_check["status"],
             "message": opex_check["message"]
         },
+        "Financial Assumption Reality": {
+            "status": financial_check["status"],
+            "message": financial_check["message"]
+        },
     }
 
     reds = sum(1 for item in checks.values() if item["status"] == "Red")
@@ -809,7 +890,7 @@ def run_reality_engine(idea, industry, price, year1_units, growth_y2, growth_y3,
 
     if reds >= 2:
         overall = "Red"
-        summary = "Reality Engine sees multiple real-world adoption or pricing issues."
+        summary = "Reality Engine sees multiple real-world adoption, pricing, cash, or margin issues."
     elif reds == 1 or yellows >= 2:
         overall = "Yellow"
         summary = "Reality Engine sees some real-world issues that may weaken investor credibility."
@@ -835,7 +916,7 @@ def reality_status_icon(status: str) -> str:
 # ==================================================
 # RULE-BASED / SCORECARD LOGIC
 # ==================================================
-def run_rule_based_sanity_check(price, year1_units, growth_y2, growth_y3, cost_per_unit, opex_pct):
+def run_rule_based_sanity_check(price, year1_units, growth_y2, growth_y3, cost_per_unit, opex_pct, ending_cash_final=None):
     warnings = []
 
     if price <= 0:
@@ -843,13 +924,25 @@ def run_rule_based_sanity_check(price, year1_units, growth_y2, growth_y3, cost_p
         return warnings
 
     gross_margin = (price - cost_per_unit) / price if price else 0
+    cogs_pct = cost_per_unit / price if price else 0
 
     if price < cost_per_unit:
         warnings.append("🔴 Price per unit is below cost per unit. This creates a structurally unprofitable business.")
+    elif cost_per_unit <= 0:
+        warnings.append("🔴 COGS is modeled at zero or below. Investors will likely view this as an unrealistic cost assumption unless there is clear evidence.")
+    elif cogs_pct < 0.05:
+        warnings.append("🔴 COGS is below 5% of revenue, implying an unusually high gross margin. Investors will likely challenge whether delivery, support, hosting, fulfillment, and payment costs are missing.")
+    elif gross_margin > 0.90:
+        warnings.append("🟠 Gross margin is above 90%. This may be defensible in some software models, but investors will expect strong proof that COGS is not understated.")
     elif gross_margin < 0.20:
         warnings.append("🟠 Gross margin is below 20%. Investors usually expect stronger margins for scalable startups.")
     elif gross_margin < 0.40:
         warnings.append("🟡 Gross margin is moderate. Investors may ask how margins improve as the company scales.")
+
+    if ending_cash_final is not None and ending_cash_final < 0:
+        warnings.append(
+            f"🔴 Ending cash is negative at ${ending_cash_final:,.0f}. Investors will treat this as a funding gap and expect a clear plan for runway, burn reduction, or additional capital."
+        )
 
     if year1_units > 300000:
         warnings.append("🔴 Year 1 sales volume is extremely high for an early-stage startup and may be unrealistic.")
@@ -882,9 +975,34 @@ def run_rule_based_sanity_check(price, year1_units, growth_y2, growth_y3, cost_p
 
 
 def build_warning_summary(warnings):
+    red_phrases = (
+        "Price per unit must be greater than zero",
+        "COGS is modeled at zero",
+        "COGS is below 5%",
+        "Ending cash is negative",
+        "Price per unit is below cost",
+        "Year 1 sales volume is extremely high",
+        "Year 2 growth above 150%",
+        "Operating expenses exceed 70%",
+        "Low gross margin combined with high operating costs",
+    )
+    amber_phrases = (
+        "Gross margin is above 90%",
+        "Gross margin is below 20%",
+        "Gross margin is moderate",
+        "Year 1 sales are ambitious",
+        "Year 2 growth above 100%",
+        "Year 3 growth above 120%",
+        "Operating expenses are high",
+        "High initial sales combined with very fast growth",
+    )
+
     red_count = sum(1 for w in warnings if w.startswith("🔴"))
     amber_count = sum(1 for w in warnings if w.startswith("🟠") or w.startswith("🟡"))
     green_count = sum(1 for w in warnings if w.startswith("🟢"))
+
+    red_count = sum(1 for w in warnings if w.startswith("🔴") or any(phrase in w for phrase in red_phrases))
+    amber_count = sum(1 for w in warnings if w.startswith("🟠") or w.startswith("🟡") or any(phrase in w for phrase in amber_phrases))
 
     if red_count >= 2:
         overall = "High Assumption Risk"
@@ -910,6 +1028,9 @@ def build_warning_summary(warnings):
 def build_scorecard(idea, industry, projection_df, price, cost_per_unit, year1_units, growth_y2, growth_y3, reality_engine_output):
     ending_cash_final = projection_df["Ending Cash"].iloc[-1]
     gross_margin = ((price - cost_per_unit) / price) if price else 0
+    cogs_pct = cost_per_unit / price if price else 0
+    benchmark = INDUSTRY_BENCHMARKS.get(industry, {})
+    gm_high = benchmark.get("gross_margin", (None, 0.80))[1]
 
     structural_pricing_status = "Green" if price >= cost_per_unit * 1.5 else "Yellow" if price >= cost_per_unit else "Red"
     market_pricing_status = reality_engine_output["checks"]["Pricing Market Fit"]["status"]
@@ -932,7 +1053,13 @@ def build_scorecard(idea, industry, projection_df, price, cost_per_unit, year1_u
     else:
         growth_status = "Green"
 
-    margin_status = "Green" if gross_margin >= 0.50 else "Yellow" if gross_margin >= 0.25 else "Red"
+    if cost_per_unit <= 0 or cogs_pct < 0.05 or gross_margin > 0.95 or gross_margin > gm_high + 0.10:
+        margin_status = "Red"
+    elif gross_margin > gm_high or gross_margin > 0.90:
+        margin_status = "Yellow"
+    else:
+        margin_status = "Green" if gross_margin >= 0.50 else "Yellow" if gross_margin >= 0.25 else "Red"
+
     cash_status = "Green" if ending_cash_final > 0 else "Red"
     operating_model_status = reality_engine_output["checks"]["Operating Model Reality"]["status"]
 
@@ -987,6 +1114,7 @@ def build_benchmark_feedback(industry, price, cost_per_unit, year1_units, growth
     feedback = []
 
     gross_margin = ((price - cost_per_unit) / price) if price > 0 else 0
+    cogs_pct = (cost_per_unit / price) if price > 0 else 0
 
     gm_low, gm_high = benchmark["gross_margin"]
     y2_low, y2_high = benchmark["growth_y2"]
@@ -998,6 +1126,16 @@ def build_benchmark_feedback(industry, price, cost_per_unit, year1_units, growth
         feedback.append(
             f"🔴 Gross margin is {gross_margin:.1%}, below the typical {industry} benchmark range of {gm_low:.0%}–{gm_high:.0%}. "
             f"Investors may question pricing power or scalability.\n{BENCHMARK_SOURCE_LABELS['gross_margin']}"
+        )
+    elif cost_per_unit <= 0 or cogs_pct < 0.05 or gross_margin > 0.95 or gross_margin > gm_high + 0.10:
+        feedback.append(
+            f"🔴 Gross margin is {gross_margin:.1%}, far above the typical {industry} benchmark range of {gm_low:.0%} to {gm_high:.0%}. "
+            f"This may signal that COGS is understated or that delivery, support, hosting, fulfillment, and payment costs are missing.\n{BENCHMARK_SOURCE_LABELS['gross_margin']}"
+        )
+    elif gross_margin > gm_high:
+        feedback.append(
+            f"🟠 Gross margin is {gross_margin:.1%}, above the typical {industry} benchmark range of {gm_low:.0%} to {gm_high:.0%}. "
+            f"Investors may ask whether COGS is complete and repeatable at scale.\n{BENCHMARK_SOURCE_LABELS['gross_margin']}"
         )
     elif gross_margin > gm_high:
         feedback.append(
@@ -1196,6 +1334,17 @@ def generate_rule_based_assumptions(industry, idea_text=""):
 
 
 def build_reality_engine_explanation(idea, industry, suggested_values):
+    projection = build_projection(
+        suggested_values["price_per_unit"],
+        suggested_values["year1_units"],
+        suggested_values["growth_y2"],
+        suggested_values["growth_y3"],
+        suggested_values["cost_per_unit"],
+        suggested_values["opex_pct"],
+        suggested_values["fixed_overhead"],
+        suggested_values["starting_cash"],
+    )
+
     reality = run_reality_engine(
         idea,
         industry,
@@ -1205,6 +1354,8 @@ def build_reality_engine_explanation(idea, industry, suggested_values):
         suggested_values["growth_y3"],
         suggested_values["opex_pct"],
         suggested_values["fixed_overhead"],
+        suggested_values["cost_per_unit"],
+        projection["Ending Cash"].iloc[-1],
     )
 
     lines = []
@@ -1814,6 +1965,7 @@ Business Model
 Go-To-Market Strategy
 Competitive Landscape
 Financial Overview
+Projection Assumptions & Investor Interpretation
 Funding Ask
 Key Risks
 
@@ -1837,12 +1989,14 @@ Slides to generate:
 6. Competitive Advantage
 7. Go-To-Market Strategy
 8. Financial Highlights
-9. Funding Ask
+9. Projection Assumptions & Investor Interpretation
+10. Funding Ask
 
 Instructions:
 - Write clearly and professionally
 - Consider the startup's industry in the business plan and deck content.
 - Use the Reality Engine to avoid blindly endorsing unrealistic assumptions.
+- For Projection Assumptions & Investor Interpretation, explain the revenue build, customer/unit assumptions, pricing logic, gross margin logic, operating expense logic, cash runway, funding need vs. milestones, and likely investor pushback using the Assumptions, Projection Summary, and Reality Engine Summary. Do not invent unsupported numbers.
 - Do NOT use markdown symbols like ##, ###, **, or bullet asterisks
 - Keep the business plan polished and readable
 - Make the deck bullets concise and presentation-ready
@@ -2097,6 +2251,8 @@ reality_engine_output = run_reality_engine(
     st.session_state.growth_y3,
     st.session_state.opex_pct,
     st.session_state.fixed_overhead,
+    st.session_state.cost_per_unit,
+    projection_df["Ending Cash"].iloc[-1],
 )
 
 scorecard = build_scorecard(
@@ -2118,6 +2274,7 @@ warnings = run_rule_based_sanity_check(
     st.session_state.growth_y3,
     st.session_state.cost_per_unit,
     st.session_state.opex_pct,
+    projection_df["Ending Cash"].iloc[-1],
 )
 
 warning_summary = build_warning_summary(warnings)
@@ -2369,8 +2526,47 @@ def generate_ai_explanations(
             )
         })
 
+    if cogs <= 0 or cogs < benchmarks["cogs_low"] * 0.35:
+        severity_score += 30
+        suggested_cogs = round((benchmarks["cogs_low"] + benchmarks["cogs_high"]) / 2, 4)
+        suggested_fixes["cogs_percent"] = suggested_cogs
+
+        explanations.append({
+            "title": "COGS assumption looks unrealistically low",
+            "severity": "High",
+            "reason": (
+                f"Your cost of goods is {cogs*100:.1f}% of revenue, well below the typical range "
+                f"for {industry} ({benchmarks['cogs_low']*100:.0f}% to {benchmarks['cogs_high']*100:.0f}%)."
+            ),
+            "why_it_matters": (
+                "Very low COGS can make gross margin look artificially strong. Investors will ask whether "
+                "hosting, support, fulfillment, labor, payment fees, returns, and delivery costs are fully included."
+            ),
+            "suggestion": (
+                f"Stress-test the model with COGS closer to {suggested_cogs*100:.1f}% unless you can defend the lower cost with operating data."
+            )
+        })
+
     # ----- Margin inference check -----
     gross_margin = 1 - cogs
+    if gross_margin > benchmarks["margin_high"] + 0.10 or gross_margin > 0.95:
+        severity_score += 25
+
+        explanations.append({
+            "title": "Gross margin may be too high to defend",
+            "severity": "High",
+            "reason": (
+                f"Your estimated gross margin is {gross_margin*100:.1f}%, above the typical "
+                f"{industry} benchmark ({benchmarks['margin_low']*100:.0f}% to {benchmarks['margin_high']*100:.0f}%)."
+            ),
+            "why_it_matters": (
+                "A very high margin can be a red flag if it comes from excluding real delivery costs rather than proven pricing power."
+            ),
+            "suggestion": (
+                "Show evidence for the margin or rerun the projection with a higher COGS assumption."
+            )
+        })
+
     if gross_margin < benchmarks["margin_low"]:
         severity_score += 15
 
@@ -3284,70 +3480,726 @@ excel_buffer.seek(0)
 # ---------------- PowerPoint ----------------
 prs = Presentation()
 
+INDUSTRY_PPT_THEMES = {
+    "SaaS": {
+        "navy": RGBColor(11, 31, 63),
+        "navy_2": RGBColor(20, 52, 101),
+        "blue": RGBColor(37, 99, 235),
+        "cyan": RGBColor(56, 189, 248),
+        "ice": RGBColor(239, 246, 255),
+        "pale_blue": RGBColor(219, 234, 254),
+        "slate": RGBColor(45, 55, 72),
+        "muted": RGBColor(100, 116, 139),
+        "soft": RGBColor(248, 250, 252),
+        "border": RGBColor(191, 219, 254),
+        "white": RGBColor(255, 255, 255),
+        "green": RGBColor(220, 252, 231),
+        "yellow": RGBColor(254, 249, 195),
+        "red": RGBColor(254, 226, 226),
+        "green_text": RGBColor(22, 101, 52),
+        "yellow_text": RGBColor(133, 77, 14),
+        "red_text": RGBColor(153, 27, 27),
+        "primary": RGBColor(11, 31, 63),
+        "secondary": RGBColor(20, 52, 101),
+        "accent": RGBColor(37, 99, 235),
+        "background": RGBColor(248, 250, 252),
+        "text": RGBColor(45, 55, 72),
+        "chart": ["#2563EB", "#38BDF8", "#0B1F3F"],
+        "visual_motif": "clean software dashboard geometry",
+        "hero_style": "polished business software with crisp blue accents",
+        "image_prompt": "modern SaaS dashboard interface, clean navy and bright blue palette, white and light gray background",
+    },
+    "Marketplace": {
+        "navy": RGBColor(49, 46, 129),
+        "navy_2": RGBColor(67, 56, 202),
+        "blue": RGBColor(13, 148, 136),
+        "cyan": RGBColor(45, 212, 191),
+        "ice": RGBColor(240, 253, 250),
+        "pale_blue": RGBColor(221, 214, 254),
+        "slate": RGBColor(45, 55, 72),
+        "muted": RGBColor(100, 116, 139),
+        "soft": RGBColor(245, 243, 255),
+        "border": RGBColor(153, 246, 228),
+        "white": RGBColor(255, 255, 255),
+        "green": RGBColor(220, 252, 231),
+        "yellow": RGBColor(254, 249, 195),
+        "red": RGBColor(254, 226, 226),
+        "green_text": RGBColor(22, 101, 52),
+        "yellow_text": RGBColor(133, 77, 14),
+        "red_text": RGBColor(153, 27, 27),
+        "primary": RGBColor(49, 46, 129),
+        "secondary": RGBColor(67, 56, 202),
+        "accent": RGBColor(13, 148, 136),
+        "background": RGBColor(245, 243, 255),
+        "text": RGBColor(45, 55, 72),
+        "chart": ["#4338CA", "#0D9488", "#2DD4BF"],
+        "visual_motif": "connected nodes and platform network lines",
+        "hero_style": "modern marketplace platform with indigo structure and teal connection accents",
+        "image_prompt": "abstract marketplace network platform, indigo and teal palette, cool light background, connected nodes",
+    },
+    "Consumer Product": {
+        "navy": RGBColor(38, 38, 38),
+        "navy_2": RGBColor(79, 70, 63),
+        "blue": RGBColor(217, 119, 6),
+        "cyan": RGBColor(245, 158, 11),
+        "ice": RGBColor(255, 247, 237),
+        "pale_blue": RGBColor(254, 215, 170),
+        "slate": RGBColor(63, 55, 48),
+        "muted": RGBColor(120, 113, 108),
+        "soft": RGBColor(255, 251, 235),
+        "border": RGBColor(231, 203, 166),
+        "white": RGBColor(255, 253, 250),
+        "green": RGBColor(220, 252, 231),
+        "yellow": RGBColor(254, 249, 195),
+        "red": RGBColor(254, 226, 226),
+        "green_text": RGBColor(22, 101, 52),
+        "yellow_text": RGBColor(133, 77, 14),
+        "red_text": RGBColor(153, 27, 27),
+        "primary": RGBColor(38, 38, 38),
+        "secondary": RGBColor(79, 70, 63),
+        "accent": RGBColor(217, 119, 6),
+        "background": RGBColor(255, 251, 235),
+        "text": RGBColor(63, 55, 48),
+        "chart": ["#D97706", "#F59E0B", "#262626"],
+        "visual_motif": "premium product surfaces and warm editorial accents",
+        "hero_style": "premium consumer brand with cream background, charcoal typography, and gold accents",
+        "image_prompt": "premium consumer product presentation, cream off-white background, charcoal text, warm orange gold accents",
+    },
+    "Food / Delivery": {
+        "navy": RGBColor(47, 34, 30),
+        "navy_2": RGBColor(91, 52, 39),
+        "blue": RGBColor(220, 38, 38),
+        "cyan": RGBColor(249, 115, 22),
+        "ice": RGBColor(255, 237, 213),
+        "pale_blue": RGBColor(254, 202, 147),
+        "slate": RGBColor(74, 54, 45),
+        "muted": RGBColor(133, 77, 54),
+        "soft": RGBColor(255, 247, 237),
+        "border": RGBColor(253, 186, 116),
+        "white": RGBColor(255, 255, 255),
+        "green": RGBColor(220, 252, 231),
+        "yellow": RGBColor(254, 249, 195),
+        "red": RGBColor(254, 226, 226),
+        "green_text": RGBColor(22, 101, 52),
+        "yellow_text": RGBColor(133, 77, 14),
+        "red_text": RGBColor(153, 27, 27),
+        "primary": RGBColor(47, 34, 30),
+        "secondary": RGBColor(91, 52, 39),
+        "accent": RGBColor(220, 38, 38),
+        "background": RGBColor(255, 247, 237),
+        "text": RGBColor(74, 54, 45),
+        "chart": ["#DC2626", "#F97316", "#2F221E"],
+        "visual_motif": "energetic service flow with warm delivery accents",
+        "hero_style": "energetic food delivery brand with orange-red accents and soft beige surfaces",
+        "image_prompt": "food delivery service visual theme, orange red accents, warm charcoal typography, beige peach background",
+    },
+    "AI Startup": {
+        "navy": RGBColor(2, 6, 23),
+        "navy_2": RGBColor(20, 16, 56),
+        "blue": RGBColor(0, 178, 255),
+        "cyan": RGBColor(139, 92, 246),
+        "ice": RGBColor(238, 242, 255),
+        "pale_blue": RGBColor(196, 181, 253),
+        "slate": RGBColor(30, 41, 59),
+        "muted": RGBColor(100, 116, 139),
+        "soft": RGBColor(248, 250, 252),
+        "border": RGBColor(165, 180, 252),
+        "white": RGBColor(255, 255, 255),
+        "green": RGBColor(220, 252, 231),
+        "yellow": RGBColor(254, 249, 195),
+        "red": RGBColor(254, 226, 226),
+        "green_text": RGBColor(22, 101, 52),
+        "yellow_text": RGBColor(133, 77, 14),
+        "red_text": RGBColor(153, 27, 27),
+        "primary": RGBColor(2, 6, 23),
+        "secondary": RGBColor(20, 16, 56),
+        "accent": RGBColor(0, 178, 255),
+        "background": RGBColor(248, 250, 252),
+        "text": RGBColor(30, 41, 59),
+        "chart": ["#00B2FF", "#8B5CF6", "#020617"],
+        "visual_motif": "technical grid, signal lines, and neural interface accents",
+        "hero_style": "futuristic technical deck with dark navy, electric blue, and violet highlights",
+        "image_prompt": "futuristic AI startup interface, dark navy, electric blue accents, violet highlights, technical grid",
+    },
+}
+
+selected_ppt_industry = st.session_state.get("industry", "SaaS")
+PPT_THEME = INDUSTRY_PPT_THEMES.get(selected_ppt_industry, INDUSTRY_PPT_THEMES["SaaS"])
+
+
+def add_block(slide, x, y, w, h, fill_color, line_color=None):
+    block = slide.shapes.add_textbox(PPTInches(x), PPTInches(y), PPTInches(w), PPTInches(h))
+    block.fill.solid()
+    block.fill.fore_color.rgb = fill_color
+    block.line.color.rgb = line_color or fill_color
+    return block
+
+
+def add_textbox(slide, x, y, w, h, text, size, color, bold=False, align=None):
+    box = slide.shapes.add_textbox(PPTInches(x), PPTInches(y), PPTInches(w), PPTInches(h))
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+    p = tf.paragraphs[0]
+    p.text = text
+    p.font.size = Pt(size)
+    p.font.bold = bold
+    p.font.color.rgb = color
+    if align:
+        p.alignment = align
+    return box
+
+
+def add_shape_block(slide, x, y, w, h, fill_color, line_color=None, shape_type=MSO_SHAPE.RECTANGLE):
+    shape = slide.shapes.add_shape(
+        shape_type,
+        PPTInches(x),
+        PPTInches(y),
+        PPTInches(w),
+        PPTInches(h),
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill_color
+    shape.line.color.rgb = line_color or fill_color
+    return shape
+
+
+def get_ppt_hero_name():
+    for key in ("company_name", "startup_name", "business_name"):
+        value = st.session_state.get(key, "")
+        if value and str(value).strip():
+            return str(value).strip()[:58]
+
+    idea = st.session_state.get("idea", "")
+    if idea and str(idea).strip():
+        first_line = str(idea).strip().splitlines()[0]
+        first_sentence = re.split(r"(?<=[.!?])\s+", first_line)[0]
+        clean_idea = first_sentence.strip()
+        if len(clean_idea) <= 58:
+            return clean_idea
+        shortened = clean_idea[:55].rsplit(" ", 1)[0].strip()
+        return shortened or clean_idea[:55].strip()
+
+    return "Investor Deck"
+
+
+def get_industry_badge_label(industry):
+    return {
+        "SaaS": "SaaS",
+        "Marketplace": "Marketplace Platform",
+        "Consumer Product": "Consumer Product",
+        "Food / Delivery": "Food / Delivery",
+        "AI Startup": "AI Startup",
+    }.get(industry, industry or "Startup")
+
+
+def add_industry_badge(slide, x, y, label, dark=False):
+    fill = PPT_THEME["navy_2"] if dark else PPT_THEME["ice"]
+    line = PPT_THEME["cyan"] if dark else PPT_THEME["border"]
+    text = PPT_THEME["cyan"] if dark else PPT_THEME["navy"]
+    badge_width = max(1.45, min(2.35, 0.18 + (len(label) * 0.08)))
+    badge = add_shape_block(slide, x, y, badge_width, 0.3, fill, line, MSO_SHAPE.ROUNDED_RECTANGLE)
+    tf = badge.text_frame
+    tf.margin_left = PPTInches(0.1)
+    tf.margin_right = PPTInches(0.1)
+    tf.margin_top = PPTInches(0.035)
+    tf.margin_bottom = 0
+    p = tf.paragraphs[0]
+    p.text = label.upper()
+    p.font.size = Pt(7.5)
+    p.font.bold = True
+    p.font.color.rgb = text
+    p.alignment = PP_ALIGN.CENTER
+    return badge
+
+
+def get_theme_image_path(industry):
+    image_paths = {
+        "SaaS": "assets/ppt_saas.jpg",
+        "Marketplace": "assets/ppt_marketplace.jpg",
+        "AI Startup": "assets/ppt_ai_startup.jpg",
+        "Consumer Product": "assets/ppt_consumer_product.jpg",
+        "Food / Delivery": "assets/ppt_food_delivery.jpg",
+    }
+    image_path = image_paths.get(industry)
+    return image_path if image_path and os.path.exists(image_path) else None
+
+
+def add_panel_label(slide, x, y, label, value=None, dark=False):
+    color = PPT_THEME["white"] if dark else PPT_THEME["navy"]
+    muted = PPT_THEME["pale_blue"] if dark else PPT_THEME["muted"]
+    add_textbox(slide, x, y, 0.95, 0.15, label.upper(), 5.6, muted, True)
+    if value:
+        add_textbox(slide, x, y + 0.17, 1.2, 0.18, value, 8.5, color, True)
+
+
+def add_theme_cover_visual(slide, industry):
+    image_path = get_theme_image_path(industry)
+    if image_path:
+        try:
+            add_shape_block(slide, 6.38, 0.88, 3.12, 5.55, PPT_THEME["navy_2"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            slide.shapes.add_picture(image_path, PPTInches(6.46), PPTInches(0.98), width=PPTInches(2.96), height=PPTInches(5.35))
+            return
+        except Exception:
+            pass
+
+    dark_panel = industry in ("SaaS", "Marketplace", "AI Startup")
+    panel_fill = PPT_THEME["navy_2"] if dark_panel else PPT_THEME["white"]
+    panel_line = PPT_THEME["cyan"] if dark_panel else PPT_THEME["border"]
+    add_shape_block(slide, 6.35, 0.86, 3.12, 5.55, panel_fill, panel_line, MSO_SHAPE.ROUNDED_RECTANGLE)
+
+    if industry == "Marketplace":
+        add_textbox(slide, 6.62, 1.18, 1.8, 0.24, "Platform Network", 10, PPT_THEME["white"], True)
+        nodes = [
+            (7.8, 1.65, 0.52, "CORE", PPT_THEME["cyan"]),
+            (6.72, 2.34, 0.42, "BUY", PPT_THEME["blue"]),
+            (8.72, 2.42, 0.42, "SELL", PPT_THEME["blue"]),
+            (7.16, 3.62, 0.38, "VND", PPT_THEME["pale_blue"]),
+            (8.35, 3.66, 0.38, "FUL", PPT_THEME["pale_blue"]),
+            (7.83, 4.72, 0.42, "PAY", PPT_THEME["cyan"]),
+        ]
+        for x1, y1, x2, y2 in [(8.04, 2.0, 6.94, 2.52), (8.12, 2.0, 8.92, 2.6), (6.95, 2.72, 7.36, 3.76), (8.92, 2.78, 8.54, 3.84), (7.44, 3.86, 8.08, 4.88), (8.5, 3.86, 8.1, 4.88)]:
+            line = add_shape_block(slide, x1, y1, 0.84, 0.035, PPT_THEME["cyan"])
+            line.rotation = 24 if y2 > y1 else -24
+        for x, y, size, label, color in nodes:
+            add_shape_block(slide, x, y, size, size, color, color, MSO_SHAPE.OVAL)
+            add_textbox(slide, x - 0.04, y + 0.17, size + 0.08, 0.12, label, 5.2, PPT_THEME["navy"], True, PP_ALIGN.CENTER)
+        add_panel_label(slide, 6.72, 5.45, "Flywheel", "Demand -> Supply", True)
+        add_panel_label(slide, 8.38, 5.45, "Take Rate", "Platform Layer", True)
+    elif industry == "AI Startup":
+        for i in range(8):
+            add_shape_block(slide, 6.58 + (i * 0.34), 1.18, 0.015, 4.65, PPT_THEME["blue"])
+        for i in range(9):
+            add_shape_block(slide, 6.55, 1.2 + (i * 0.5), 2.62, 0.015, PPT_THEME["cyan"])
+        for x, y, size in [(7.02, 1.72, 0.18), (7.78, 2.28, 0.24), (8.58, 1.86, 0.16), (6.88, 3.38, 0.2), (8.3, 3.68, 0.24), (7.55, 4.62, 0.18)]:
+            add_shape_block(slide, x, y, size, size, PPT_THEME["cyan"], PPT_THEME["cyan"], MSO_SHAPE.OVAL)
+        for x, y, w, rot in [(7.14, 1.9, 0.82, 28), (7.92, 2.43, 0.8, -22), (7.05, 3.56, 1.45, 10), (7.7, 4.72, 0.82, -18)]:
+            line = add_shape_block(slide, x, y, w, 0.028, PPT_THEME["blue"])
+            line.rotation = rot
+        add_shape_block(slide, 6.72, 5.25, 2.34, 0.52, PPT_THEME["navy"], PPT_THEME["blue"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_textbox(slide, 6.92, 5.38, 1.9, 0.18, "MODEL SIGNAL / DATA PIPELINE", 7, PPT_THEME["cyan"], True, PP_ALIGN.CENTER)
+    elif industry == "Consumer Product":
+        add_shape_block(slide, 6.68, 1.22, 1.0, 3.15, PPT_THEME["ice"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_shape_block(slide, 6.86, 1.55, 0.64, 2.18, PPT_THEME["white"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_shape_block(slide, 7.95, 1.52, 1.1, 1.18, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_shape_block(slide, 7.95, 2.95, 1.1, 1.18, PPT_THEME["ice"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_block(slide, 8.12, 1.82, 0.58, 0.06, PPT_THEME["cyan"])
+        add_block(slide, 8.12, 2.03, 0.72, 0.04, PPT_THEME["blue"])
+        add_block(slide, 8.12, 3.28, 0.52, 0.06, PPT_THEME["cyan"])
+        add_block(slide, 8.12, 3.5, 0.68, 0.04, PPT_THEME["blue"])
+        add_shape_block(slide, 6.62, 4.78, 2.54, 0.62, PPT_THEME["navy"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_textbox(slide, 6.9, 4.96, 1.96, 0.2, "PREMIUM BRAND SYSTEM", 7.2, PPT_THEME["white"], True, PP_ALIGN.CENTER)
+    elif industry == "Food / Delivery":
+        add_textbox(slide, 6.62, 1.18, 1.85, 0.24, "Service Route", 10, PPT_THEME["navy"], True)
+        route_segments = [(6.84, 2.05, 1.25, 18), (7.78, 2.66, 0.92, -22), (7.05, 3.54, 1.28, 18), (7.96, 4.16, 0.84, -18)]
+        for x, y, w, rot in route_segments:
+            route = add_shape_block(slide, x, y, w, 0.06, PPT_THEME["cyan"])
+            route.rotation = rot
+        for x, y, label in [(6.78, 1.84, "ORDER"), (8.62, 2.48, "KITCHEN"), (6.86, 3.36, "RIDER"), (8.58, 4.06, "DOOR")]:
+            add_shape_block(slide, x, y, 0.54, 0.54, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            add_textbox(slide, x - 0.04, y + 0.2, 0.62, 0.12, label, 5.2, PPT_THEME["navy"], True, PP_ALIGN.CENTER)
+        add_shape_block(slide, 6.76, 5.0, 2.3, 0.54, PPT_THEME["ice"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_textbox(slide, 6.96, 5.16, 1.85, 0.16, "LIVE OPERATIONS LOOP", 7, PPT_THEME["navy"], True, PP_ALIGN.CENTER)
+    else:
+        add_shape_block(slide, 6.62, 1.14, 2.58, 0.4, PPT_THEME["navy"], PPT_THEME["blue"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_textbox(slide, 6.82, 1.26, 1.72, 0.15, "Growth Dashboard", 7.5, PPT_THEME["cyan"], True)
+        add_shape_block(slide, 6.62, 1.72, 0.52, 3.62, PPT_THEME["navy"], PPT_THEME["blue"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        for i in range(5):
+            add_shape_block(slide, 6.8, 2.0 + (i * 0.48), 0.18, 0.18, PPT_THEME["cyan"], PPT_THEME["cyan"], MSO_SHAPE.OVAL)
+        for i, (x, y) in enumerate([(7.38, 1.74), (8.28, 1.74), (7.38, 2.44), (8.28, 2.44)]):
+            add_shape_block(slide, x, y, 0.72, 0.46, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            add_block(slide, x + 0.12, y + 0.16, 0.36 + (i * 0.06), 0.05, PPT_THEME["blue"])
+            add_block(slide, x + 0.12, y + 0.29, 0.26, 0.04, PPT_THEME["cyan"])
+        add_shape_block(slide, 7.36, 3.24, 1.8, 1.1, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        for i, h in enumerate([0.34, 0.56, 0.42, 0.74, 0.62]):
+            add_block(slide, 7.55 + (i * 0.25), 4.04 - h, 0.12, h, PPT_THEME["blue"] if i % 2 else PPT_THEME["cyan"])
+        add_shape_block(slide, 7.36, 4.6, 1.8, 0.52, PPT_THEME["ice"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+        add_textbox(slide, 7.68, 4.76, 1.16, 0.16, "ARR WORKFLOW", 7, PPT_THEME["navy"], True, PP_ALIGN.CENTER)
+
+
+def add_theme_content_visual(slide, industry):
+    try:
+        add_block(slide, 0.22, 1.28, 0.08, 4.95, PPT_THEME["blue"])
+        add_block(slide, 0.34, 1.28, 0.035, 4.95, PPT_THEME["cyan"])
+        if industry == "Marketplace":
+            for x, y in [(8.86, 1.5), (9.34, 2.08), (8.92, 2.74), (9.38, 3.34)]:
+                add_shape_block(slide, x, y, 0.15, 0.15, PPT_THEME["cyan"], PPT_THEME["cyan"], MSO_SHAPE.OVAL)
+            add_shape_block(slide, 8.96, 2.14, 0.42, 0.03, PPT_THEME["blue"])
+            add_shape_block(slide, 9.0, 2.8, 0.36, 0.03, PPT_THEME["cyan"])
+        elif industry == "Consumer Product":
+            add_shape_block(slide, 8.72, 1.42, 0.72, 1.0, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            add_shape_block(slide, 8.86, 1.62, 0.44, 0.58, PPT_THEME["ice"], PPT_THEME["cyan"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            add_block(slide, 8.72, 2.78, 0.72, 0.05, PPT_THEME["cyan"])
+            add_block(slide, 8.86, 3.02, 0.5, 0.04, PPT_THEME["blue"])
+        elif industry == "Food / Delivery":
+            for x, y, w, rot in [(8.64, 1.5, 0.75, 18), (8.82, 2.05, 0.62, -24), (8.58, 2.72, 0.78, 18)]:
+                route = add_shape_block(slide, x, y, w, 0.05, PPT_THEME["cyan"])
+                route.rotation = rot
+            add_shape_block(slide, 9.2, 3.14, 0.22, 0.22, PPT_THEME["blue"], PPT_THEME["blue"], MSO_SHAPE.OVAL)
+        elif industry == "AI Startup":
+            for i in range(4):
+                add_shape_block(slide, 8.62 + (i * 0.22), 1.34, 0.015, 1.3, PPT_THEME["blue"])
+                add_shape_block(slide, 8.56, 1.48 + (i * 0.26), 1.0, 0.015, PPT_THEME["cyan"])
+            add_shape_block(slide, 8.9, 2.22, 0.18, 0.18, PPT_THEME["cyan"], PPT_THEME["cyan"], MSO_SHAPE.OVAL)
+        else:
+            for i in range(3):
+                add_shape_block(slide, 8.66 + (i * 0.28), 1.42, 0.2, 0.2, PPT_THEME["ice"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+            add_block(slide, 8.66, 1.92, 0.88, 0.05, PPT_THEME["cyan"])
+    except Exception:
+        pass
+
+
+def add_industry_motif(slide, industry, surface="title"):
+    if surface == "title":
+        add_theme_cover_visual(slide, industry)
+    else:
+        add_theme_content_visual(slide, industry)
+
+
+def add_logo(slide, x=8.65, y=6.58, width=0.62):
+    logo_path = "turbopitch_logo.png"
+    if os.path.exists(logo_path):
+        try:
+            slide.shapes.add_picture(logo_path, PPTInches(x), PPTInches(y), width=PPTInches(width))
+        except Exception:
+            pass
+
+
+def add_dark_header(slide, title, eyebrow=None):
+    add_block(slide, 0, 0, 10, 1.02, PPT_THEME["navy"])
+    add_block(slide, 0, 1.02, 10, 0.08, PPT_THEME["blue"])
+    header = slide.shapes.add_textbox(PPTInches(0.55), PPTInches(0.18), PPTInches(8.35), PPTInches(0.65))
+    tf = header.text_frame
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+
+    if eyebrow:
+        p = tf.paragraphs[0]
+        p.text = eyebrow.upper()
+        p.font.size = Pt(8)
+        p.font.bold = True
+        p.font.color.rgb = PPT_THEME["cyan"]
+        p.space_after = Pt(2)
+        title_p = tf.add_paragraph()
+    else:
+        title_p = tf.paragraphs[0]
+
+    title_p.text = title
+    title_p.font.size = Pt(22)
+    title_p.font.bold = True
+    title_p.font.color.rgb = PPT_THEME["white"]
+
+
+def add_footer(slide, dark=False):
+    footer = slide.shapes.add_textbox(PPTInches(0.55), PPTInches(6.86), PPTInches(4.8), PPTInches(0.22))
+    tf = footer.text_frame
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+    p = tf.paragraphs[0]
+    p.text = "TurboPitch"
+    p.font.size = Pt(7)
+    p.font.bold = False
+    p.font.color.rgb = PPT_THEME["pale_blue"] if dark else PPT_THEME["muted"]
+    add_logo(slide)
+
+
+def add_metric_card(slide, x, y, w, h, year_label, metrics, accent_color=None):
+    card = add_shape_block(slide, x, y, w, h, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+    add_block(slide, x, y, 0.08, h, accent_color or PPT_THEME["blue"])
+    tf = card.text_frame
+    tf.word_wrap = True
+    tf.margin_left = PPTInches(0.2)
+    tf.margin_right = PPTInches(0.14)
+    tf.margin_top = PPTInches(0.15)
+    tf.margin_bottom = PPTInches(0.12)
+
+    p = tf.paragraphs[0]
+    p.text = year_label
+    p.font.size = Pt(13)
+    p.font.bold = True
+    p.font.color.rgb = PPT_THEME["navy"]
+    p.space_after = Pt(8)
+
+    for label, value in metrics:
+        metric_p = tf.add_paragraph()
+        metric_p.text = label
+        metric_p.font.size = Pt(7.5)
+        metric_p.font.bold = True
+        metric_p.font.color.rgb = PPT_THEME["muted"]
+        metric_p.space_after = Pt(0)
+
+        value_p = tf.add_paragraph()
+        value_p.text = value
+        value_p.font.size = Pt(13)
+        value_p.font.bold = True
+        value_p.font.color.rgb = PPT_THEME["navy"]
+        value_p.space_after = Pt(5)
+
+
+def add_bullet_panel(slide, x, y, w, h, title, bullets, fill_color=None, title_color=None):
+    panel = add_shape_block(slide, x, y, w, h, fill_color or PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+    add_block(slide, x, y, w, 0.08, PPT_THEME["cyan"])
+    tf = panel.text_frame
+    tf.word_wrap = True
+    tf.margin_left = PPTInches(0.2)
+    tf.margin_right = PPTInches(0.18)
+    tf.margin_top = PPTInches(0.18)
+    tf.margin_bottom = PPTInches(0.1)
+
+    p = tf.paragraphs[0]
+    p.text = title
+    p.font.size = Pt(12)
+    p.font.bold = True
+    p.font.color.rgb = title_color or PPT_THEME["navy"]
+    p.space_after = Pt(4)
+
+    for item in bullets[:5]:
+        p = tf.add_paragraph()
+        p.text = item
+        p.font.size = Pt(8.8)
+        p.font.color.rgb = PPT_THEME["slate"]
+        p.level = 0
+        p.space_after = Pt(3)
+
+
+def add_bullet_card(slide, bullets):
+    row_items = (bullets[:6] if bullets else ["No content available."])
+    card_x = 0.62
+    card_y = 1.28
+    card_w = 7.95
+    card_h = 5.28
+    add_shape_block(slide, card_x, card_y, card_w, card_h, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+    add_block(slide, card_x, card_y, card_w, 0.1, PPT_THEME["blue"])
+    add_block(slide, card_x + 0.22, card_y + 0.34, 0.68, 0.05, PPT_THEME["cyan"])
+
+    content = slide.shapes.add_textbox(
+        PPTInches(card_x + 0.38),
+        PPTInches(card_y + 0.58),
+        PPTInches(card_w - 0.76),
+        PPTInches(card_h - 0.9),
+    )
+    tf = content.text_frame
+    tf.word_wrap = True
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+
+    for i, item in enumerate(row_items):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = item
+        p.font.size = Pt(10.3 if len(row_items) <= 4 else 9.4)
+        p.font.color.rgb = PPT_THEME["slate"]
+        p.space_after = Pt(9 if len(row_items) <= 4 else 6)
+        p.level = 0
+
+    add_shape_block(slide, card_x + card_w - 0.76, card_y + card_h - 0.72, 0.38, 0.38, PPT_THEME["ice"], PPT_THEME["border"], MSO_SHAPE.OVAL)
+
+
+def add_content_slide_frame(slide, title, eyebrow):
+    add_block(slide, 0, 0, 10, 7.5, PPT_THEME["soft"])
+    add_theme_content_visual(slide, selected_ppt_industry)
+    add_block(slide, 0, 0, 10, 0.16, PPT_THEME["navy"])
+    add_textbox(slide, 0.62, 0.28, 1.45, 0.24, eyebrow.upper(), 7.5, PPT_THEME["blue"], True)
+    add_industry_badge(slide, 7.36, 0.28, get_industry_badge_label(selected_ppt_industry))
+    add_textbox(slide, 0.62, 0.56, 8.25, 0.46, title, 20, PPT_THEME["navy"], True)
+    add_block(slide, 0.62, 1.06, 0.95, 0.05, PPT_THEME["blue"])
+    add_block(slide, 1.64, 1.06, 0.36, 0.05, PPT_THEME["cyan"])
+
+
+def add_content_rows(slide, bullets):
+    add_bullet_card(slide, bullets)
+
 # Title Slide
-slide = prs.slides.add_slide(prs.slide_layouts[0])
-slide.shapes.title.text = "TurboPitch Investor Deck"
-slide.placeholders[1].text = "AI-generated investor materials with financial projections and reality checks"
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+cover_dark = selected_ppt_industry not in ("Consumer Product", "Food / Delivery")
+cover_bg = PPT_THEME["navy"] if cover_dark else PPT_THEME["soft"]
+cover_text = PPT_THEME["white"] if cover_dark else PPT_THEME["navy"]
+cover_muted = PPT_THEME["pale_blue"] if cover_dark else PPT_THEME["slate"]
+cover_card = PPT_THEME["navy_2"] if cover_dark else PPT_THEME["white"]
+add_block(slide, 0, 0, 10, 7.5, cover_bg)
+add_block(slide, 6.08, 0, 3.92, 7.5, PPT_THEME["navy_2"] if cover_dark else PPT_THEME["ice"])
+add_theme_cover_visual(slide, selected_ppt_industry)
+add_block(slide, 0.65, 0.62, 1.18, 0.08, PPT_THEME["cyan"])
+add_block(slide, 0.65, 0.78, 0.52, 0.08, PPT_THEME["blue"])
+add_textbox(slide, 0.65, 1.02, 2.7, 0.22, "TURBOPITCH INVESTOR DECK", 7.5, PPT_THEME["cyan"], True)
+add_industry_badge(slide, 0.65, 1.34, get_industry_badge_label(selected_ppt_industry), dark=cover_dark)
+add_textbox(slide, 0.65, 1.84, 5.25, 1.24, get_ppt_hero_name(), 34, cover_text, True)
+add_textbox(
+    slide,
+    0.68,
+    3.18,
+    4.95,
+    0.72,
+    "AI-generated investor materials with financial projections and readiness checks",
+    16,
+    cover_muted,
+)
+summary_box = add_shape_block(slide, 0.68, 4.28, 4.95, 0.86, cover_card, PPT_THEME["blue"], MSO_SHAPE.ROUNDED_RECTANGLE)
+tf = summary_box.text_frame
+tf.word_wrap = True
+tf.margin_left = PPTInches(0.2)
+tf.margin_right = PPTInches(0.2)
+tf.margin_top = PPTInches(0.14)
+p = tf.paragraphs[0]
+p.text = "Financial snapshot, investor readiness, and generated pitch narrative in one branded deck."
+p.font.size = Pt(13)
+p.font.color.rgb = cover_text
+
+title_metrics = [
+    ("Revenue", f"${projection_df.loc[2, 'Revenue'] / 1000:,.0f}K"),
+    ("Net Income", f"${projection_df.loc[2, 'Net Income'] / 1000:,.0f}K"),
+    ("Ending Cash", f"${projection_df.loc[2, 'Ending Cash'] / 1000:,.0f}K"),
+]
+for i, (label, value) in enumerate(title_metrics):
+    chip_x = 0.68 + (i * 1.64)
+    chip = add_shape_block(slide, chip_x, 5.48, 1.42, 0.52, cover_card, PPT_THEME["border"] if not cover_dark else PPT_THEME["blue"], MSO_SHAPE.ROUNDED_RECTANGLE)
+    tf = chip.text_frame
+    tf.margin_left = PPTInches(0.12)
+    tf.margin_right = PPTInches(0.08)
+    tf.margin_top = PPTInches(0.08)
+    tf.margin_bottom = 0
+    p = tf.paragraphs[0]
+    p.text = label.upper()
+    p.font.size = Pt(5.8)
+    p.font.bold = True
+    p.font.color.rgb = PPT_THEME["cyan"] if cover_dark else PPT_THEME["muted"]
+    value_p = tf.add_paragraph()
+    value_p.text = value
+    value_p.font.size = Pt(11.5)
+    value_p.font.bold = True
+    value_p.font.color.rgb = cover_text
+add_textbox(slide, 7.72, 6.18, 1.7, 0.28, "INVESTOR READY", 8, PPT_THEME["cyan"], True, PP_ALIGN.RIGHT)
+add_logo(slide, 8.6, 0.52, 0.68)
+add_footer(slide, dark=cover_dark)
 
 # Financial Overview Slide
-slide = prs.slides.add_slide(prs.slide_layouts[5])
-slide.shapes.title.text = "Financial Overview"
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_block(slide, 0, 0, 10, 7.5, PPT_THEME["soft"])
+add_theme_content_visual(slide, selected_ppt_industry)
+add_dark_header(slide, "Financial Overview", "Projection Dashboard")
 
-tx_box = slide.shapes.add_textbox(PPTInches(0.6), PPTInches(1.3), PPTInches(4.2), PPTInches(2.2))
-tf = tx_box.text_frame
-tf.word_wrap = True
-
-financial_points = [
-    f"Year 1 Revenue: ${projection_df.loc[0, 'Revenue']:,.0f}",
-    f"Year 3 Revenue: ${projection_df.loc[2, 'Revenue']:,.0f}",
-    f"Year 3 Net Income: ${projection_df.loc[2, 'Net Income']:,.0f}",
-    f"Year 3 Ending Cash: ${projection_df.loc[2, 'Ending Cash']:,.0f}",
-    f"Gross Margin: {projection_df.loc[2, 'Gross Margin %']:.1%}",
+year_card_data = [
+    ("Year 1", projection_df.loc[0]),
+    ("Year 2", projection_df.loc[1]),
+    ("Year 3", projection_df.loc[2]),
 ]
 
-for i, point in enumerate(financial_points):
-    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-    p.text = point
-    p.font.size = Pt(18)
+for i, (year_label, year_row) in enumerate(year_card_data):
+    card_x = 0.58 + (i * 1.5)
+    add_metric_card(
+        slide,
+        card_x,
+        1.34,
+        1.36,
+        3.65,
+        year_label,
+        [
+            ("Revenue", f"${year_row['Revenue'] / 1000:,.0f}K"),
+            ("Net Income", f"${year_row['Net Income'] / 1000:,.0f}K"),
+            ("Ending Cash", f"${year_row['Ending Cash'] / 1000:,.0f}K"),
+        ],
+        accent_color=PPT_THEME["blue"],
+    )
 
-ppt_chart = create_ppt_financial_chart_image(projection_df)
-slide.shapes.add_picture(ppt_chart, PPTInches(5.0), PPTInches(1.2), width=PPTInches(4.3))
+ppt_chart = create_ppt_financial_chart_image(projection_df, PPT_THEME)
+chart_panel = add_shape_block(slide, 5.1, 1.28, 4.34, 5.0, PPT_THEME["white"], PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+add_block(slide, 5.1, 1.28, 4.34, 0.1, PPT_THEME["blue"])
+tf = chart_panel.text_frame
+tf.margin_left = PPTInches(0.18)
+tf.margin_top = PPTInches(0.18)
+p = tf.paragraphs[0]
+p.text = "Revenue / Net Income / Ending Cash"
+p.font.size = Pt(10)
+p.font.bold = True
+p.font.color.rgb = PPT_THEME["navy"]
+slide.shapes.add_picture(ppt_chart, PPTInches(5.22), PPTInches(1.82), width=PPTInches(4.04))
+add_footer(slide)
 
 # Reality Check Slide
-slide = prs.slides.add_slide(prs.slide_layouts[5])
-slide.shapes.title.text = "Reality Engine Summary"
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_block(slide, 0, 0, 10, 7.5, PPT_THEME["soft"])
+add_theme_content_visual(slide, selected_ppt_industry)
+add_dark_header(slide, "Investor Readiness Check", "Investor Memo")
 
-box = slide.shapes.add_textbox(PPTInches(0.7), PPTInches(1.4), PPTInches(8.5), PPTInches(4.8))
-tf = box.text_frame
+status_colors = {
+    "Green": PPT_THEME["green"],
+    "Yellow": PPT_THEME["yellow"],
+    "Red": PPT_THEME["red"],
+}
+status_text_colors = {
+    "Green": PPT_THEME["green_text"],
+    "Yellow": PPT_THEME["yellow_text"],
+    "Red": PPT_THEME["red_text"],
+}
+
+overall_status = reality_engine_output["overall"]
+overall_box = add_shape_block(slide, 0.58, 1.28, 8.78, 1.02, status_colors.get(overall_status, PPT_THEME["ice"]), PPT_THEME["border"], MSO_SHAPE.ROUNDED_RECTANGLE)
+add_block(slide, 0.55, 1.32, 0.12, 1.0, status_text_colors.get(overall_status, PPT_THEME["blue"]))
+tf = overall_box.text_frame
 tf.word_wrap = True
-
+tf.margin_left = PPTInches(0.26)
+tf.margin_right = PPTInches(0.18)
+tf.margin_top = PPTInches(0.12)
 overall_p = tf.paragraphs[0]
-overall_p.text = f"Overall: {reality_engine_output['overall']} - {reality_engine_output['summary']}"
-overall_p.font.size = Pt(20)
+overall_p.text = f"Overall: {overall_status}"
+overall_p.font.size = Pt(15)
 overall_p.font.bold = True
+overall_p.font.color.rgb = PPT_THEME["navy"]
+summary_p = tf.add_paragraph()
+summary_p.text = reality_engine_output["summary"]
+summary_p.font.size = Pt(10)
+summary_p.font.color.rgb = PPT_THEME["slate"]
 
-for label, item in reality_engine_output["checks"].items():
-    p = tf.add_paragraph()
-    p.text = f"{label}: {item['status']} - {item['message']}"
-    p.font.size = Pt(15)
+credible_checks = [
+    f"{label}: {item['message']}"
+    for label, item in reality_engine_output["checks"].items()
+    if item["status"] == "Green"
+]
+challenged_checks = [
+    f"{label}: {item['status']} - {item['message']}"
+    for label, item in reality_engine_output["checks"].items()
+    if item["status"] != "Green"
+]
+recommended_fixes = [
+    f"Prepare evidence for {label.lower()}: {item['message']}"
+    for label, item in reality_engine_output["checks"].items()
+    if item["status"] != "Green"
+]
+
+sections = [
+    ("What looks credible", credible_checks or ["No Green checks yet."], PPT_THEME["green"]),
+    ("What investors may challenge", challenged_checks or ["No major challenges flagged."], PPT_THEME["yellow"]),
+    ("Recommended fix", recommended_fixes or ["Keep the assumptions supported with clear evidence."], PPT_THEME["ice"]),
+]
+
+for i, (section_title, section_items, fill_color) in enumerate(sections):
+    add_bullet_panel(
+        slide,
+        0.58 + (i * 3.0),
+        2.72,
+        2.78,
+        3.44,
+        section_title,
+        section_items[:4],
+        fill_color,
+        PPT_THEME["navy"],
+    )
+add_footer(slide)
 
 # Pitch Deck Content Slides
 for title, bullets in deck_slides:
-    slide = prs.slides.add_slide(prs.slide_layouts[5])
-    slide.shapes.title.text = title
-
-    content_box = slide.shapes.add_textbox(PPTInches(0.8), PPTInches(1.5), PPTInches(8.4), PPTInches(4.8))
-    tf = content_box.text_frame
-    tf.word_wrap = True
-
-    if bullets:
-        for i, bullet in enumerate(bullets[:6]):
-            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-            p.text = bullet
-            p.font.size = Pt(20)
-            p.level = 0
-    else:
-        tf.paragraphs[0].text = "No content available."
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    add_content_slide_frame(slide, title, "Pitch Deck")
+    add_content_rows(slide, bullets)
+    add_footer(slide)
 
 ppt_buffer = io.BytesIO()
 prs.save(ppt_buffer)
